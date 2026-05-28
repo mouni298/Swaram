@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Swaram AI Minimal Playground</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #08090b;
+        --panel: #15161b;
+        --panel-2: #101115;
+        --line: #2a2c34;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --green: #64e895;
+        --purple: #d946ef;
+        --cyan: #22d3ee;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 430px 1fr;
+      }
+
+      aside {
+        border-right: 1px solid var(--line);
+        background: #111217;
+        padding: 24px;
+        overflow-y: auto;
+      }
+
+      section.agent {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        padding: 24px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 24px;
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-size: 24px;
+        letter-spacing: 0;
+      }
+
+      .pill {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 7px 11px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 22px;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 20px;
+      }
+
+      .tab {
+        padding: 0 0 12px;
+        color: var(--muted);
+        font-weight: 650;
+      }
+
+      .tab.active {
+        color: var(--text);
+        border-bottom: 2px solid var(--purple);
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 18px;
+        margin-bottom: 16px;
+      }
+
+      label {
+        display: block;
+        color: var(--text);
+        font-weight: 650;
+        margin-bottom: 8px;
+      }
+
+      select,
+      textarea,
+      input {
+        width: 100%;
+        border: 1px solid #3a3c45;
+        background: #111217;
+        color: var(--text);
+        border-radius: 6px;
+        padding: 13px 14px;
+        font: inherit;
+        outline: none;
+      }
+
+      textarea {
+        min-height: 154px;
+        resize: vertical;
+        line-height: 1.55;
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+        margin: 7px 0 0;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 18px;
+        min-height: 42px;
+        border-bottom: 1px solid var(--line);
+        margin: -24px -24px 0;
+        padding: 16px 24px;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-rows: 1fr auto;
+        min-height: 0;
+        flex: 1;
+      }
+
+      .voice-area {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 26px;
+        min-height: 460px;
+      }
+
+      .voice-orb {
+        position: relative;
+        width: 320px;
+        height: 320px;
+        display: grid;
+        place-items: center;
+        --voice-level: 0;
+        --voice-scale: calc(1 + (var(--voice-level) * 0.09));
+        --voice-glow: calc(14px + (var(--voice-level) * 34px));
+      }
+
+      .voice-orb::before {
+        content: "";
+        position: absolute;
+        inset: 34px;
+        border-radius: 50%;
+        background: #000;
+        box-shadow:
+          0 0 var(--voice-glow) rgba(34, 211, 238, 0.2),
+          inset 0 0 44px rgba(255, 255, 255, 0.06);
+        z-index: 1;
+      }
+
+      .voice-ring {
+        position: absolute;
+        inset: 27px;
+        border-radius: 50%;
+        background:
+          conic-gradient(
+            from 20deg,
+            rgba(255, 255, 255, 0.98),
+            rgba(96, 165, 250, 0.9),
+            rgba(217, 70, 239, 0.88),
+            rgba(244, 114, 182, 0.75),
+            rgba(100, 232, 149, 0.95),
+            rgba(255, 255, 255, 0.98)
+          );
+        filter: drop-shadow(0 0 14px rgba(96, 165, 250, 0.42));
+        -webkit-mask: radial-gradient(circle, transparent 63%, #000 64%, #000 68%, transparent 69%);
+        mask: radial-gradient(circle, transparent 63%, #000 64%, #000 68%, transparent 69%);
+        transform: scale(var(--voice-scale));
+      }
+
+      .voice-ring.two {
+        inset: 22px 30px 28px 20px;
+        background:
+          conic-gradient(
+            from 140deg,
+            transparent 0 9%,
+            rgba(96, 165, 250, 0.9) 14%,
+            rgba(255, 255, 255, 0.92) 25%,
+            transparent 33%,
+            rgba(100, 232, 149, 0.72) 58%,
+            transparent 76%
+          );
+        filter: blur(0.5px) drop-shadow(0 0 18px rgba(100, 232, 149, 0.32));
+        opacity: 0.88;
+        -webkit-mask: radial-gradient(circle, transparent 62%, #000 63%, #000 68%, transparent 69%);
+        mask: radial-gradient(circle, transparent 62%, #000 63%, #000 68%, transparent 69%);
+      }
+
+      .voice-ring.three {
+        inset: 24px 18px 22px 34px;
+        background:
+          conic-gradient(
+            from 250deg,
+            transparent 0 12%,
+            rgba(244, 114, 182, 0.72) 18%,
+            rgba(255, 255, 255, 0.94) 32%,
+            rgba(167, 139, 250, 0.9) 46%,
+            transparent 62%,
+            rgba(34, 211, 238, 0.8) 82%,
+            transparent 92%
+          );
+        filter: blur(0.8px) drop-shadow(0 0 16px rgba(217, 70, 239, 0.36));
+        opacity: 0.76;
+        -webkit-mask: radial-gradient(circle, transparent 61%, #000 62%, #000 67%, transparent 68%);
+        mask: radial-gradient(circle, transparent 61%, #000 62%, #000 67%, transparent 68%);
+      }
+
+      .mic-icon {
+        position: relative;
+        width: 112px;
+        height: 128px;
+        z-index: 2;
+      }
+
+      .mic-head {
+        position: absolute;
+        top: 6px;
+        left: 34px;
+        width: 44px;
+        height: 72px;
+        border-radius: 24px;
+        background: #d8d8d8;
+      }
+
+      .mic-arc {
+        position: absolute;
+        top: 55px;
+        left: 15px;
+        width: 82px;
+        height: 58px;
+        border: 9px solid #d8d8d8;
+        border-top: 0;
+        border-radius: 0 0 48px 48px;
+      }
+
+      .mic-stem {
+        position: absolute;
+        top: 106px;
+        left: 52px;
+        width: 9px;
+        height: 25px;
+        border-radius: 999px;
+        background: #d8d8d8;
+      }
+
+      .listening .voice-ring {
+        animation: voiceSpin 2.9s linear infinite, voicePulse 1.35s ease-in-out infinite alternate;
+      }
+
+      .listening .voice-ring.two {
+        animation-duration: 3.7s, 1.2s;
+        animation-direction: reverse, alternate;
+      }
+
+      .listening .voice-ring.three {
+        animation-duration: 4.5s, 1.55s;
+      }
+
+      .listening .mic-icon {
+        animation: micBreathe 1.2s ease-in-out infinite alternate;
+      }
+
+      @keyframes voiceSpin {
+        to {
+          transform: rotate(360deg) scale(var(--voice-scale));
+        }
+      }
+
+      @keyframes voicePulse {
+        to {
+          scale: calc(1.045 + (var(--voice-level) * 0.05));
+          opacity: 1;
+        }
+      }
+
+      @keyframes micBreathe {
+        to {
+          transform: scale(1.04);
+          filter: drop-shadow(0 0 18px rgba(255, 255, 255, 0.24));
+        }
+      }
+
+      .status {
+        color: var(--muted);
+        max-width: 460px;
+        text-align: center;
+        line-height: 1.5;
+      }
+
+      button {
+        border: 0;
+        background: var(--green);
+        color: #082013;
+        font-weight: 800;
+        border-radius: 6px;
+        padding: 16px 24px;
+        cursor: pointer;
+        font: inherit;
+      }
+
+      button.secondary {
+        background: #292b33;
+        color: var(--text);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .transcript {
+        border: 1px solid var(--line);
+        background: #0d0e11;
+        border-radius: 8px;
+        padding: 16px;
+        min-height: 220px;
+        max-height: 320px;
+        overflow-y: auto;
+      }
+
+      .message {
+        max-width: 760px;
+        border: 1px solid #2f3139;
+        background: #15161b;
+        border-radius: 12px;
+        padding: 13px 15px;
+        margin: 10px 0;
+        line-height: 1.5;
+      }
+
+      .message.user {
+        margin-left: auto;
+        background: #2a2c34;
+      }
+
+      form {
+        display: flex;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      form input {
+        flex: 1;
+      }
+
+      @media (max-width: 900px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+
+        aside {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <aside>
+        <div class="brand">
+          <h1>Swaram</h1>
+          <span class="pill">Minimal Playground</span>
+        </div>
+
+        <div class="tabs">
+          <div class="tab active">Agent</div>
+          <div class="tab">Transcription</div>
+          <div class="tab">LLM</div>
+        </div>
+
+        <div class="card">
+          <label for="language">Language</label>
+          <select id="language"></select>
+          <p class="hint">Used for transcription and matching the selected Piper voice.</p>
+        </div>
+
+        <div class="card">
+          <label for="transcription">Transcription</label>
+          <select id="transcription">
+            <option>Whisper.cpp Local</option>
+          </select>
+          <p class="hint">Runs through a local whisper.cpp server at localhost:2022.</p>
+        </div>
+
+        <div class="card">
+          <label for="llm">Model</label>
+          <select id="llm">
+            <option value="llama-3.1-8b-instant">Groq · llama-3.1-8b-instant (fastest)</option>
+            <option value="llama-3.3-70b-versatile">Groq · llama-3.3-70b-versatile</option>
+            <option value="meta-llama/llama-4-scout-17b-16e-instruct">Groq · llama-4-scout-17b</option>
+            <option value="meta-llama/llama-4-maverick-17b-128e-instruct">Groq · llama-4-maverick-17b</option>
+            <option value="openai/gpt-oss-20b">Groq · gpt-oss-20b</option>
+            <option value="openai/gpt-oss-120b">Groq · gpt-oss-120b</option>
+            <option value="gemma2-9b-it">Groq · gemma2-9b-it</option>
+          </select>
+          <p class="hint">Runs through Groq's hosted API. Pick any model; switching is instant.</p>
+        </div>
+
+        <div class="card">
+          <label for="groq-key">Groq API Key</label>
+          <input id="groq-key" type="password" placeholder="gsk_..." autocomplete="off" />
+          <p class="hint">Get one at console.groq.com/keys. Stored only in this browser (localStorage).</p>
+        </div>
+
+        <div class="card">
+          <label for="tts">Voice</label>
+          <select id="tts"></select>
+          <p class="hint">Uses a local Piper HTTP server at localhost:5000. The server must have these voice models installed.</p>
+        </div>
+
+        <div class="card">
+          <label for="instructions">Instructions</label>
+          <textarea id="instructions"></textarea>
+        </div>
+      </aside>
+
+      <section class="agent">
+        <div class="header">
+          <span class="pill" id="agent-status">Ready</span>
+          <button class="secondary" id="reset">Reset</button>
+        </div>
+
+        <div class="workspace">
+          <div class="voice-area" id="voice-area">
+            <div class="voice-orb" aria-hidden="true">
+              <div class="voice-ring"></div>
+              <div class="voice-ring two"></div>
+              <div class="voice-ring three"></div>
+              <div class="mic-icon">
+                <div class="mic-head"></div>
+                <div class="mic-arc"></div>
+                <div class="mic-stem"></div>
+              </div>
+            </div>
+            <p class="status" id="status-copy">
+              Configure the agent on the left, then talk to it here.
+            </p>
+            <button id="talk">Talk To Your Agent</button>
+          </div>
+
+          <div>
+            <div class="transcript" id="transcript"></div>
+            <form id="typed">
+              <input id="typed-input" placeholder="Type a message, e.g. Where is my order?" />
+              <button type="submit">Send</button>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/node_modules/onnxruntime-web/dist/ort.js"></script>
+    <script>
+      window.ort.env.wasm.wasmPaths = "/node_modules/onnxruntime-web/dist/";
+    </script>
+    <script src="/node_modules/@ricky0123/vad-web/dist/bundle.min.js"></script>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
