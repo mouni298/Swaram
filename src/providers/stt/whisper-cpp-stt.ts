@@ -87,7 +87,10 @@ export class WhisperCppSTTProvider implements StreamingSTTProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`whisper.cpp transcription failed with status ${response.status}.`);
+        const detail = await response.text().catch(() => "");
+        throw new Error(
+          `whisper.cpp transcription failed with status ${response.status}.${detail ? ` ${detail}` : ""}`,
+        );
       }
 
       const text =

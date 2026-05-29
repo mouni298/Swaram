@@ -2,7 +2,12 @@ import type { AudioChunk, StreamingTTSProvider, TTSConnectOptions, Unsubscribe }
 
 export class PiperTTSProvider implements StreamingTTSProvider {
   readonly name = "piper-tts";
-  private requestId = 0;
+  // Bumped only on stop()/close() (interruption). Every sendText within one turn
+  // shares the same generation, so sequential chunks are NOT treated as stale.
+  private generation = 0;
+  // Serializes synthesis so audio is emitted in the same order text was sent,
+  // rather than racing concurrent HTTP requests that can resolve out of order.
+  private chain: Promise<void> = Promise.resolve();
   private connected = false;
   private signal: AbortSignal | undefined;
   private handlers = {
@@ -32,8 +37,8 @@ export class PiperTTSProvider implements StreamingTTSProvider {
       return;
     }
 
-    const id = ++this.requestId;
-    void this.synthesize(text, id);
+    const generation = this.generation;
+    this.chain = this.chain.then(() => this.synthesize(text, generation));
   }
 
   flush() {
@@ -41,7 +46,8 @@ export class PiperTTSProvider implements StreamingTTSProvider {
   }
 
   stop() {
-    this.requestId += 1;
+    this.generation += 1;
+    this.chain = Promise.resolve();
   }
 
   close() {
@@ -60,7 +66,11 @@ export class PiperTTSProvider implements StreamingTTSProvider {
     };
   }
 
-  private async synthesize(text: string, id: number) {
+  private async synthesize(text: string, generation: number) {
+    if (generation !== this.generation || !this.connected) {
+      return;
+    }
+
     try {
       this.emit("start", new Uint8Array());
       const response = await (this.options.fetchImpl ?? fetch)(this.url(), {
@@ -74,11 +84,12 @@ export class PiperTTSProvider implements StreamingTTSProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`Piper TTS failed with status ${response.status}.`);
+        const detail = await response.text().catch(() => "");
+        throw new Error(`Piper TTS failed with status ${response.status}.${detail ? ` ${detail}` : ""}`);
       }
 
       const audio = await response.arrayBuffer();
-      if (id !== this.requestId || !this.connected) {
+      if (generation !== this.generation || !this.connected) {
         return;
       }
 
@@ -88,7 +99,7 @@ export class PiperTTSProvider implements StreamingTTSProvider {
       });
       this.emit("end", new Uint8Array());
     } catch (error) {
-      if (id === this.requestId) {
+      if (generation === this.generation) {
         this.emit("error", {
           error: error instanceof Error ? error : new Error(String(error)),
         });

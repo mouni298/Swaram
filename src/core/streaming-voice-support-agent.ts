@@ -3,6 +3,7 @@ import { InterruptionController } from "./interruption-controller.js";
 import { AudioPlaybackQueue } from "./audio-playback-queue.js";
 import { TypedEventEmitter } from "./event-emitter.js";
 import { ToolRegistry } from "./tool-registry.js";
+import { encodeWavFromFloat32 } from "./wav.js";
 import type {
   AudioChunk,
   LLMStreamEvent,
@@ -157,13 +158,19 @@ export class StreamingVoiceSupportAgent {
       }
     });
 
-    this.config.vad.on("speechEnd", () => {
+    this.config.vad.on("speechEnd", (payload) => {
       if (this.status === "error" || this.status === "stopped") {
         return;
       }
 
       this.events.emit("speechEnd", {});
       this.setStatus("transcribing");
+
+      if (this.config.sttAudioSource === "vad" && payload?.audio && payload.audio.length > 0) {
+        const wav = encodeWavFromFloat32(payload.audio, this.config.vadSampleRate ?? 16000);
+        this.config.stt.sendAudio({ data: wav, mimeType: "audio/wav" });
+      }
+
       this.config.stt.flush();
     });
 
@@ -227,6 +234,12 @@ export class StreamingVoiceSupportAgent {
   }
 
   private async startMicrophoneStreaming() {
+    // In "vad" mode the STT is fed a standalone WAV per utterance from the VAD's
+    // PCM (see the speechEnd handler), so the continuous MediaRecorder is skipped.
+    if (this.config.sttAudioSource === "vad") {
+      return;
+    }
+
     if (typeof navigator === "undefined" || typeof MediaRecorder === "undefined") {
       return;
     }

@@ -38,7 +38,7 @@ if (storedModel) {
   llm.value = storedModel;
 }
 
-groqKeyInput.addEventListener("change", () => {
+groqKeyInput.addEventListener("input", () => {
   localStorage.setItem(GROQ_KEY_STORAGE, groqKeyInput.value.trim());
 });
 
@@ -67,6 +67,7 @@ function selectedPiperVoice() {
 }
 
 let agent = createAgent();
+let lastUsedKey = (groqKeyInput.value || localStorage.getItem(GROQ_KEY_STORAGE) || "").trim();
 let micLevelMeter = null;
 
 function setVoiceLevel(level) {
@@ -144,6 +145,10 @@ function createAgent() {
   const nextAgent = new StreamingVoiceSupportAgent({
     instructions: `${instructions.value}\n\n${buildLanguageInstruction(language.value)}`,
     voice: selectedVoice,
+    // whisper.cpp is utterance-based: send a complete WAV per turn from the VAD's
+    // PCM instead of stitching headerless webm chunks (which broke turns 2+).
+    sttAudioSource: "vad",
+    vadSampleRate: 16000,
     vad: createVADProvider(),
     stt: new WhisperCppSTTProvider({
       baseUrl: "http://localhost:2022",
@@ -260,6 +265,13 @@ talk.addEventListener("click", () => {
     statusCopy.textContent = "Enter your Groq API key on the left before talking. Get one at console.groq.com/keys.";
     groqKeyInput.focus();
     return;
+  }
+
+  localStorage.setItem(GROQ_KEY_STORAGE, key);
+  if (key !== lastUsedKey) {
+    agent.stop().catch(() => undefined);
+    agent = createAgent();
+    lastUsedKey = key;
   }
 
   startMicLevelMeter()

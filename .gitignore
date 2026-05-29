@@ -9,3 +9,6 @@ vendor/
 *.onnx
 *.bin
 
+# Local service logs (start-services.sh)
+.logs/
+

@@ -225,6 +225,17 @@ export type StreamingVoiceSupportAgentConfig = {
   tts: StreamingTTSProvider;
   tools?: ToolDefinition[];
   mediaStream?: MediaStream;
+  /**
+   * Where utterance audio for the STT comes from.
+   * - "mediaRecorder" (default): a continuous MediaRecorder streams webm chunks.
+   *   Right for socket-streaming STT providers (e.g. Deepgram).
+   * - "vad": each utterance's PCM from the VAD is encoded to a standalone WAV and
+   *   sent on speech-end. Right for utterance-based STT (e.g. whisper.cpp), and
+   *   avoids the headerless-webm problem on turns after the first.
+   */
+  sttAudioSource?: "mediaRecorder" | "vad";
+  /** Sample rate of the VAD's Float32 audio. @ricky0123/vad-web emits 16000. */
+  vadSampleRate?: number;
 };
 
 export type StreamingVoiceSupportAgentEventMap = {
