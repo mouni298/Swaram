@@ -6,9 +6,6 @@ import {
   WhisperCppSTTProvider,
   buildLanguageInstruction,
   ecommerceSupportTemplate,
-  getDefaultPiperVoiceForLanguage,
-  getPiperVoiceConfig,
-  piperVoicePresets,
   supportedLanguages,
   voicePresets,
 } from "../../dist/index.js";
@@ -53,8 +50,24 @@ language.replaceChildren(
   }),
 );
 
+// Kokoro voices (TTS now runs on Kokoro). Prefix: a=American, b=British,
+// f=female, m=male. The voice id is sent through to the Kokoro server.
+const kokoroVoices = [
+  { id: "af_heart", label: "Heart — US female" },
+  { id: "af_bella", label: "Bella — US female" },
+  { id: "af_nicole", label: "Nicole — US female (soft)" },
+  { id: "af_sky", label: "Sky — US female" },
+  { id: "am_michael", label: "Michael — US male" },
+  { id: "am_adam", label: "Adam — US male" },
+  { id: "am_puck", label: "Puck — US male" },
+  { id: "bf_emma", label: "Emma — UK female" },
+  { id: "bf_isabella", label: "Isabella — UK female" },
+  { id: "bm_george", label: "George — UK male" },
+  { id: "bm_lewis", label: "Lewis — UK male" },
+];
+
 tts.replaceChildren(
-  ...piperVoicePresets.map((voice) => {
+  ...kokoroVoices.map((voice) => {
     const option = document.createElement("option");
     option.value = voice.id;
     option.textContent = voice.label;
@@ -62,8 +75,8 @@ tts.replaceChildren(
   }),
 );
 
-function selectedPiperVoice() {
-  return getPiperVoiceConfig(tts.value) ?? piperVoicePresets[0];
+function selectedVoiceLabel() {
+  return tts.options[tts.selectedIndex]?.text ?? tts.value;
 }
 
 let agent = createAgent();
@@ -132,13 +145,28 @@ function createVADProvider() {
     loadModule: () => Promise.resolve(window.vad),
     baseAssetPath: "/node_modules/@ricky0123/vad-web/dist/",
     onnxWASMBasePath: "/node_modules/onnxruntime-web/dist/",
+    // Stop the mic from hearing the agent's own playback (echo) so it doesn't
+    // self-interrupt, and damp background noise.
+    additionalAudioConstraints: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+    // Require clearer, more sustained speech before firing, so a stray noise or
+    // residual echo doesn't register as the user barging in. (vad-web defaults
+    // are ~0.5 / 3 frames.)
+    positiveSpeechThreshold: 0.8,
+    negativeSpeechThreshold: 0.5,
+    minSpeechFrames: 8,
+    redemptionFrames: 12,
+    preSpeechPadFrames: 4,
   });
 }
 
 function createAgent() {
   const selectedVoice = {
     ...voicePresets[0],
-    ...selectedPiperVoice(),
+    id: tts.value,
     language: language.value,
   };
 
@@ -304,13 +332,11 @@ reset.addEventListener("click", () => {
 });
 
 tts.addEventListener("change", () => {
-  const selectedVoice = selectedPiperVoice();
-  language.value = selectedVoice.language;
   agent.stop().catch(() => undefined);
   stopMicLevelMeter();
   agent = createAgent();
   statusPill.textContent = "Ready";
-  statusCopy.textContent = `${selectedVoice.label} selected.`;
+  statusCopy.textContent = `${selectedVoiceLabel()} selected.`;
 });
 
 llm.addEventListener("change", () => {
@@ -323,11 +349,6 @@ llm.addEventListener("change", () => {
 });
 
 language.addEventListener("change", () => {
-  const matchingVoice = getDefaultPiperVoiceForLanguage(language.value);
-  if (matchingVoice) {
-    tts.value = matchingVoice.id;
-  }
-
   agent.stop().catch(() => undefined);
   stopMicLevelMeter();
   agent = createAgent();

@@ -14,6 +14,13 @@ type VADModule = {
       onSpeechStart?: () => void;
       onSpeechEnd?: (audio: Float32Array) => void;
       onVADMisfire?: () => void;
+      // Silero VAD tuning (forwarded as-is to @ricky0123/vad-web).
+      positiveSpeechThreshold?: number;
+      negativeSpeechThreshold?: number;
+      minSpeechFrames?: number;
+      redemptionFrames?: number;
+      preSpeechPadFrames?: number;
+      additionalAudioConstraints?: MediaTrackConstraints;
     }) => Promise<MicVADInstance>;
   };
 };
@@ -22,6 +29,20 @@ type BrowserVADProviderOptions = {
   loadModule?: () => Promise<VADModule>;
   baseAssetPath?: string;
   onnxWASMBasePath?: string;
+  /** Min speech probability (0-1) to start a segment. Higher = less noise-triggered. */
+  positiveSpeechThreshold?: number;
+  /** Probability below which speech is considered ended. */
+  negativeSpeechThreshold?: number;
+  /** Min frames (~32ms each) a segment must last to count as speech, not a misfire. */
+  minSpeechFrames?: number;
+  /** Frames of sub-threshold audio tolerated before declaring speech end. */
+  redemptionFrames?: number;
+  /** Frames of audio kept before speech onset so the first word isn't clipped. */
+  preSpeechPadFrames?: number;
+  /** Extra getUserMedia audio constraints, e.g. echo cancellation. */
+  additionalAudioConstraints?: MediaTrackConstraints;
+  /** Called when a too-short segment is discarded as noise (a "misfire"). */
+  onMisfire?: () => void;
 };
 
 export class BrowserVADProvider implements VADProvider {
@@ -44,13 +65,20 @@ export class BrowserVADProvider implements VADProvider {
       throw new Error("Browser VAD requires microphone support.");
     }
 
+    const o = this.options;
     const module = await this.loadModule();
     this.vad = await module.MicVAD.new({
-      ...(this.options.baseAssetPath ? { baseAssetPath: this.options.baseAssetPath } : {}),
-      ...(this.options.onnxWASMBasePath ? { onnxWASMBasePath: this.options.onnxWASMBasePath } : {}),
+      ...(o.baseAssetPath ? { baseAssetPath: o.baseAssetPath } : {}),
+      ...(o.onnxWASMBasePath ? { onnxWASMBasePath: o.onnxWASMBasePath } : {}),
+      ...(o.positiveSpeechThreshold !== undefined ? { positiveSpeechThreshold: o.positiveSpeechThreshold } : {}),
+      ...(o.negativeSpeechThreshold !== undefined ? { negativeSpeechThreshold: o.negativeSpeechThreshold } : {}),
+      ...(o.minSpeechFrames !== undefined ? { minSpeechFrames: o.minSpeechFrames } : {}),
+      ...(o.redemptionFrames !== undefined ? { redemptionFrames: o.redemptionFrames } : {}),
+      ...(o.preSpeechPadFrames !== undefined ? { preSpeechPadFrames: o.preSpeechPadFrames } : {}),
+      ...(o.additionalAudioConstraints ? { additionalAudioConstraints: o.additionalAudioConstraints } : {}),
       onSpeechStart: () => this.emit("speechStart", {}),
       onSpeechEnd: (audio) => this.emit("speechEnd", { audio }),
-      onVADMisfire: () => undefined,
+      onVADMisfire: () => o.onMisfire?.(),
     });
     this.vad.start();
   }

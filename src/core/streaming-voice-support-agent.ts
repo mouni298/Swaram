@@ -70,8 +70,20 @@ export class StreamingVoiceSupportAgent {
     this.instructions = config.instructions ?? config.template?.instructions ?? "";
     this.tools = new ToolRegistry([...(config.template?.tools ?? []), ...(config.tools ?? [])]);
     this.playback = new AudioPlaybackQueue({
-      onStart: () => this.events.emit("audioStart", {}),
-      onEnd: () => this.events.emit("audioEnd", {}),
+      onStart: () => {
+        // Keep status on "speaking" for the whole spoken response (not just while
+        // the LLM streams text), so barge-in stays armed during playback.
+        if (this.status !== "error" && this.status !== "stopped" && this.status !== "interrupted") {
+          this.setStatus("speaking");
+        }
+        this.events.emit("audioStart", {});
+      },
+      onEnd: () => {
+        if (this.status === "speaking") {
+          this.setStatus("listening");
+        }
+        this.events.emit("audioEnd", {});
+      },
       onError: (error) => this.fail(error),
     });
     this.interruptionController = new InterruptionController({
@@ -311,8 +323,18 @@ export class StreamingVoiceSupportAgent {
       if (assistantText) {
         this.addMessage("assistant", assistantText);
       }
-      this.setStatus("listening");
+      // Don't force "listening" here — audio is still synthesizing/playing.
+      // Playback's onEnd moves us back to "listening". Only do it now if there's
+      // no audio coming (e.g. an empty or tool-only response).
+      if (!assistantText && !this.playback.isActive()) {
+        this.setStatus("listening");
+      }
     } catch (error) {
+      // A barge-in aborts the in-flight LLM stream on purpose; that surfaces here
+      // as an abort. It's expected, not a failure, so don't tear the session down.
+      if (this.status === "interrupted" || (error instanceof Error && error.name === "AbortError")) {
+        return;
+      }
       this.fail(toSwaramError(error, "PROVIDER_FAILURE"));
     }
   }

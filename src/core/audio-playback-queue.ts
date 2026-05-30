@@ -20,6 +20,11 @@ export class AudioPlaybackQueue {
     void this.drain();
   }
 
+  /** True while audio is actively playing or queued — used to gate barge-in. */
+  isActive() {
+    return this.playing || this.queue.length > 0;
+  }
+
   clear() {
     this.queue = [];
     this.currentSource?.stop();

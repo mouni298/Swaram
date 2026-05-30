@@ -13,7 +13,13 @@ export class InterruptionController {
   ) {}
 
   handleSpeechStart() {
-    if (this.dependencies.getStatus() !== "speaking") {
+    const status = this.dependencies.getStatus();
+    // Interrupt whenever the agent is mid-response: forming a reply ("thinking"),
+    // streaming text ("speaking"), or still playing audio. The status flips to
+    // "listening" once the LLM stream ends, but playback continues for seconds
+    // afterward, so gate on playback activity too — not just the status.
+    const responding = status === "thinking" || status === "speaking";
+    if (!responding && !this.dependencies.playback.isActive()) {
       return false;
     }
 
