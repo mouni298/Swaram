@@ -62,16 +62,55 @@ const instructions = document.querySelector("#instructions");
 const language = document.querySelector("#language");
 const transcript = document.querySelector("#transcript");
 const statusPill = document.querySelector("#agent-status");
+const statusText = document.querySelector("#agent-status-text");
 const statusCopy = document.querySelector("#status-copy");
 const voiceArea = document.querySelector("#voice-area");
 const talk = document.querySelector("#talk");
+const talkLabel = document.querySelector("#talk-label");
 const reset = document.querySelector("#reset");
-const typed = document.querySelector("#typed");
-const typedInput = document.querySelector("#typed-input");
 const tts = document.querySelector("#tts");
 const llm = document.querySelector("#llm");
 const groqKeyInput = document.querySelector("#groq-key");
 const voiceOrb = document.querySelector(".voice-orb");
+const ctxVoice = document.querySelector("#ctx-voice");
+const ctxModel = document.querySelector("#ctx-model");
+
+// Sidebar tabs: toggle which settings group is visible.
+const tabs = [...document.querySelectorAll(".tab")];
+const panels = [...document.querySelectorAll(".tab-panel")];
+for (const tab of tabs) {
+  tab.addEventListener("click", () => {
+    const target = tab.dataset.tab;
+    for (const t of tabs) {
+      t.classList.toggle("active", t === tab);
+    }
+    for (const p of panels) {
+      p.classList.toggle("active", p.dataset.panel === target);
+    }
+  });
+}
+
+// Tracks whether the user has an explicit live mic session running (Talk pressed
+// and not yet stopped). Drives the Talk/Stop button; separate from per-turn
+// status, which also moves for typed turns.
+let voiceSessionOn = false;
+
+const ACTIVE_STATUSES = ["listening", "user_speaking", "transcribing", "thinking", "speaking"];
+
+function updateTalkButton() {
+  if (voiceSessionOn) {
+    talkLabel.textContent = "Stop session";
+    talk.classList.add("stop");
+  } else {
+    talkLabel.textContent = "Talk to your agent";
+    talk.classList.remove("stop");
+  }
+}
+
+function updateContext() {
+  ctxVoice.textContent = selectedVoiceLabel().split(" — ")[0] ?? selectedVoiceLabel();
+  ctxModel.textContent = (llm.options[llm.selectedIndex]?.text ?? llm.value).replace(/^Groq · /, "");
+}
 
 const GROQ_KEY_STORAGE = "swaram.groq.apiKey";
 const GROQ_MODEL_STORAGE = "swaram.groq.model";
@@ -289,68 +328,145 @@ function createAgent() {
   });
 
   nextAgent.on("status", ({ status }) => {
-    statusPill.textContent = labelForStatus(status);
+    statusPill.dataset.state = status;
+    statusText.textContent = labelForStatus(status);
     statusCopy.textContent = copyForStatus(status);
-    voiceArea.classList.toggle(
-      "listening",
-      ["listening", "user_speaking", "transcribing", "thinking", "speaking"].includes(status),
-    );
-    talk.disabled = ["listening", "user_speaking", "transcribing", "thinking", "speaking"].includes(status);
+    voiceArea.classList.toggle("listening", ACTIVE_STATUSES.includes(status));
+
+    // If the agent settled itself (stopped/error/idle), the live session is over.
+    if (status === "stopped" || status === "error" || status === "idle") {
+      voiceSessionOn = false;
+      updateTalkButton();
+    }
   });
 
+  // Single source of truth for committed turns. User messages and finalized
+  // assistant messages both arrive here; assistant text also streams live via
+  // llmToken, so we reconcile the two below.
   nextAgent.on("transcript", ({ message }) => {
     if (message.role === "system") {
       return;
     }
-
-    appendMessage(message.role, message.content);
+    if (message.role === "assistant") {
+      finalizeAssistant(message.content);
+    } else {
+      appendMessage(message.role, message.content);
+    }
   });
 
   nextAgent.on("toolCall", ({ toolCall }) => {
-    appendMessage("assistant", `Tool call: ${toolCall.name} ${JSON.stringify(toolCall.result)}`);
-  });
-
-  nextAgent.on("finalTranscript", ({ text }) => {
-    appendMessage("user", text);
+    appendToolChip(toolCall);
   });
 
   nextAgent.on("llmToken", ({ text }) => {
     appendStreamingAssistant(text);
   });
 
-  nextAgent.on("interruption", ({ reason }) => {
-    appendMessage("assistant", `Interrupted: ${reason}`);
+  nextAgent.on("interruption", () => {
+    appendNotice("You interrupted the agent.");
   });
 
   nextAgent.on("error", ({ error }) => {
     stopMicLevelMeter();
-    statusPill.textContent = "Error";
+    voiceSessionOn = false;
+    updateTalkButton();
+    statusPill.dataset.state = "error";
+    statusText.textContent = "Error";
     statusCopy.textContent = error.message;
     voiceArea.classList.remove("listening");
-    talk.disabled = false;
   });
 
   return nextAgent;
 }
 
-function appendMessage(role, content) {
-  const node = document.createElement("div");
-  node.className = `message ${role}`;
-  node.textContent = content;
-  transcript.append(node);
+// The live assistant bubble for the current turn (token-streamed), or null
+// between turns. Reset when the turn's final assistant message is committed.
+let draftAssistant = null;
+
+function clearEmptyState() {
+  transcript.querySelector(".empty-state")?.remove();
+}
+
+function resetTranscript() {
+  draftAssistant = null;
+  transcript.innerHTML =
+    '<div class="empty-state">No messages yet.<br />Hit <b>Talk</b> and speak to your agent.</div>';
+}
+
+function scrollTranscript() {
   transcript.scrollTop = transcript.scrollHeight;
 }
 
-function appendStreamingAssistant(text) {
-  let node = transcript.querySelector(".message.assistant.streaming");
-  if (!node) {
-    node = document.createElement("div");
-    node.className = "message assistant streaming";
-    transcript.append(node);
-  }
+function makeBubble(role, content) {
+  const node = document.createElement("div");
+  node.className = `message ${role}`;
+  const who = document.createElement("span");
+  who.className = "who";
+  who.textContent = role === "user" ? "You" : "Agent";
+  const body = document.createElement("span");
+  body.className = "body";
+  body.textContent = content;
+  node.append(who, body);
+  return node;
+}
 
-  node.textContent += text;
-  transcript.scrollTop = transcript.scrollHeight;
+function appendMessage(role, content) {
+  clearEmptyState();
+  transcript.append(makeBubble(role, content));
+  scrollTranscript();
+}
+
+// Append a streamed assistant token, creating the live bubble if needed.
+function appendStreamingAssistant(text) {
+  clearEmptyState();
+  if (!draftAssistant) {
+    draftAssistant = makeBubble("assistant", "");
+    draftAssistant.classList.add("streaming");
+    transcript.append(draftAssistant);
+  }
+  draftAssistant.querySelector(".body").textContent += text;
+  scrollTranscript();
+}
+
+// Commit the assistant turn: finalize the streamed bubble, or create one if the
+// reply never streamed (e.g. a non-streaming path).
+function finalizeAssistant(content) {
+  if (draftAssistant) {
+    draftAssistant.classList.remove("streaming");
+    draftAssistant.querySelector(".body").textContent = content;
+    draftAssistant = null;
+  } else {
+    appendMessage("assistant", content);
+  }
+  scrollTranscript();
+}
+
+function appendToolChip(toolCall) {
+  clearEmptyState();
+  const chip = document.createElement("div");
+  chip.className = "tool-chip";
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = `🔧 ${toolCall.name}`;
+  chip.append(name);
+  if (toolCall.result !== undefined) {
+    const result = document.createElement("pre");
+    result.className = "result";
+    result.textContent =
+      typeof toolCall.result === "string" ? toolCall.result : JSON.stringify(toolCall.result, null, 2);
+    chip.append(result);
+  }
+  transcript.append(chip);
+  scrollTranscript();
+}
+
+function appendNotice(text) {
+  clearEmptyState();
+  const node = document.createElement("div");
+  node.className = "notice";
+  node.textContent = text;
+  transcript.append(node);
+  scrollTranscript();
 }
 
 function labelForStatus(status) {
@@ -377,85 +493,108 @@ function copyForStatus(status) {
     speaking: "Groq and Piper are generating the response.",
     interrupted: "Playback was interrupted.",
     stopped: "Session stopped.",
-    error: "Something needs attention. Try typed input as a fallback.",
+    error: "Something needs attention. Check the service logs and try again.",
   }[status] ?? "Ready.";
 }
 
-talk.addEventListener("click", () => {
+// Set the status pill + copy directly (for UI events that aren't agent statuses).
+function setStatusManual(state, label, copy) {
+  statusPill.dataset.state = state;
+  statusText.textContent = label;
+  statusCopy.textContent = copy;
+}
+
+// Resolve the Groq key, persist it, or guide the user to the Model tab if missing.
+function ensureKey() {
   const key = (groqKeyInput.value || localStorage.getItem(GROQ_KEY_STORAGE) || "").trim();
   if (!key) {
-    statusPill.textContent = "Missing API key";
-    statusCopy.textContent = "Enter your Groq API key on the left before talking. Get one at console.groq.com/keys.";
+    setStatusManual(
+      "error",
+      "Missing key",
+      "Add your Groq API key under the Model tab first. Get one at console.groq.com/keys.",
+    );
+    document.querySelector('.tab[data-tab="model"]').click();
     groqKeyInput.focus();
+    return "";
+  }
+  localStorage.setItem(GROQ_KEY_STORAGE, key);
+  return key;
+}
+
+// Tear down the current agent and build a fresh one (used on config changes).
+function recreateAgent({ ready } = {}) {
+  agent.stop().catch(() => undefined);
+  stopMicLevelMeter();
+  voiceSessionOn = false;
+  agent = createAgent();
+  updateTalkButton();
+  updateContext();
+  if (ready) {
+    setStatusManual("idle", "Ready", ready);
+  }
+}
+
+talk.addEventListener("click", () => {
+  // Stop a running session.
+  if (voiceSessionOn) {
+    voiceSessionOn = false;
+    updateTalkButton();
+    agent.stop().catch(() => undefined);
+    stopMicLevelMeter();
+    setStatusManual("idle", "Ready", "Session stopped. Hit Talk whenever you're ready.");
     return;
   }
 
-  localStorage.setItem(GROQ_KEY_STORAGE, key);
+  const key = ensureKey();
+  if (!key) {
+    return;
+  }
   if (key !== lastUsedKey) {
     agent.stop().catch(() => undefined);
     agent = createAgent();
     lastUsedKey = key;
   }
 
+  voiceSessionOn = true;
+  updateTalkButton();
   startMicLevelMeter()
     .then(() => agent.start())
     .catch((error) => {
-      statusPill.textContent = "Error";
-      statusCopy.textContent = error.message;
+      voiceSessionOn = false;
+      updateTalkButton();
+      setStatusManual("error", "Error", error.message);
       stopMicLevelMeter();
     });
 });
 
-typed.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const message = typedInput.value.trim();
-  typedInput.value = "";
-  if (message) {
-    appendMessage("user", message);
-    statusPill.textContent = "Typed fallback unavailable";
-    statusCopy.textContent = "This playground now uses the streaming local voice path. Use the local-streaming demo for lower-level debugging.";
-  }
-});
-
 reset.addEventListener("click", () => {
-  transcript.innerHTML = "";
+  resetTranscript();
   agent.stop().catch(() => undefined);
   stopMicLevelMeter();
+  voiceSessionOn = false;
   agent = createAgent();
-  statusPill.textContent = "Ready";
-  statusCopy.textContent = "Configure the agent on the left, then talk to it here.";
+  updateTalkButton();
+  setStatusManual("idle", "Ready", "Configure the agent on the left, then hit Talk.");
 });
 
 tts.addEventListener("change", () => {
-  agent.stop().catch(() => undefined);
-  stopMicLevelMeter();
-  agent = createAgent();
-  statusPill.textContent = "Ready";
-  statusCopy.textContent = `${selectedVoiceLabel()} selected.`;
+  recreateAgent({ ready: `${selectedVoiceLabel()} selected.` });
 });
 
 llm.addEventListener("change", () => {
   localStorage.setItem(GROQ_MODEL_STORAGE, llm.value);
-  agent.stop().catch(() => undefined);
-  stopMicLevelMeter();
-  agent = createAgent();
-  statusPill.textContent = "Ready";
-  statusCopy.textContent = `${llm.options[llm.selectedIndex].text} selected.`;
+  recreateAgent({ ready: `${llm.options[llm.selectedIndex].text} selected.` });
 });
 
 language.addEventListener("change", () => {
   populateVoicesForLanguage();
-  agent.stop().catch(() => undefined);
-  stopMicLevelMeter();
-  agent = createAgent();
-  statusPill.textContent = "Ready";
-  statusCopy.textContent = `${language.options[language.selectedIndex].text} selected.`;
+  recreateAgent({ ready: `${language.options[language.selectedIndex].text} selected.` });
 });
 
 sttModelSelect.addEventListener("change", () => {
-  agent.stop().catch(() => undefined);
-  stopMicLevelMeter();
-  agent = createAgent();
-  statusPill.textContent = "Ready";
-  statusCopy.textContent = `Transcription model: ${sttModelSelect.options[sttModelSelect.selectedIndex].text}.`;
+  recreateAgent({ ready: `Transcription model: ${sttModelSelect.options[sttModelSelect.selectedIndex].text}.` });
 });
+
+// Initial UI sync.
+updateTalkButton();
+updateContext();

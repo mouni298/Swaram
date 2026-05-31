@@ -63,6 +63,9 @@ export class StreamingVoiceSupportAgent {
   private mediaRecorder: MediaRecorder | null = null;
   private mediaStream: MediaStream | null = null;
   private finalTranscript = "";
+  // True while a live mic session is running (start()..stop()). Lets typed turns
+  // sent via sendText() return to "idle" instead of "listening" when no mic is on.
+  private sessionActive = false;
   private readonly instructions: string;
   private readonly interruptionController: InterruptionController;
 
@@ -80,7 +83,9 @@ export class StreamingVoiceSupportAgent {
       },
       onEnd: () => {
         if (this.status === "speaking") {
-          this.setStatus("listening");
+          // Back to listening while a mic session is live; otherwise (a typed
+          // turn with no mic) settle on idle so the UI doesn't imply it's hearing.
+          this.setStatus(this.sessionActive ? "listening" : "idle");
         }
         this.events.emit("audioEnd", {});
       },
@@ -129,6 +134,7 @@ export class StreamingVoiceSupportAgent {
     }
 
     this.abortController = new AbortController();
+    this.sessionActive = true;
     this.setStatus("listening");
 
     try {
@@ -148,6 +154,7 @@ export class StreamingVoiceSupportAgent {
   }
 
   async stop() {
+    this.sessionActive = false;
     this.stopProviders();
     await this.playback.close();
     this.setStatus("stopped");
@@ -155,6 +162,36 @@ export class StreamingVoiceSupportAgent {
 
   interrupt() {
     this.interruptionController.interruptManually();
+  }
+
+  /**
+   * Send a typed message as a user turn. Works with or without a live mic
+   * session: if none is running it lazily connects the TTS so the reply is still
+   * spoken, then runs the normal LLM -> TTS path. Lets a text box (or any
+   * non-voice UI) drive the agent.
+   */
+  async sendText(text: string) {
+    if (!text.trim()) {
+      return;
+    }
+
+    // Outside a live session there's no abort controller or connected TTS yet,
+    // and the status guard in respondToFinalTranscript would reject a "stopped"/
+    // "error" state. Set up a fresh turn so the response can stream and be spoken.
+    if (!this.sessionActive) {
+      this.abortController = new AbortController();
+      this.setStatus("thinking");
+      try {
+        await this.config.tts.connect({
+          ...(this.config.voice ? { voice: this.config.voice } : {}),
+          signal: this.abortController.signal,
+        });
+      } catch (error) {
+        throw this.fail(toSwaramError(error, "PROVIDER_FAILURE"));
+      }
+    }
+
+    await this.respondToFinalTranscript(text);
   }
 
   private bindProviderEvents() {
@@ -327,7 +364,7 @@ export class StreamingVoiceSupportAgent {
       // Playback's onEnd moves us back to "listening". Only do it now if there's
       // no audio coming (e.g. an empty or tool-only response).
       if (!assistantText && !this.playback.isActive()) {
-        this.setStatus("listening");
+        this.setStatus(this.sessionActive ? "listening" : "idle");
       }
     } catch (error) {
       // A barge-in aborts the in-flight LLM stream on purpose; that surfaces here
@@ -388,6 +425,7 @@ export class StreamingVoiceSupportAgent {
 
   private fail(error: unknown) {
     const normalized = toSwaramError(error, "PROVIDER_FAILURE");
+    this.sessionActive = false;
     this.stopProviders();
     void this.playback.close();
     this.setStatus("error");
