@@ -403,15 +403,13 @@
         <div class="card">
           <label for="language">Language</label>
           <select id="language"></select>
-          <p class="hint">Used for transcription and matching the selected Piper voice.</p>
+          <p class="hint">Sets the speech language and the available voices.</p>
         </div>
 
         <div class="card">
-          <label for="transcription">Transcription</label>
-          <select id="transcription">
-            <option>Whisper.cpp Local</option>
-          </select>
-          <p class="hint">Runs through a local whisper.cpp server at localhost:2022.</p>
+          <label for="transcription">Transcription model</label>
+          <select id="transcription"></select>
+          <p class="hint">Local whisper.cpp (hot-swapped on the server). Bigger = more accurate but slower.</p>
         </div>
 
         <div class="card">
@@ -437,7 +435,7 @@
         <div class="card">
           <label for="tts">Voice</label>
           <select id="tts"></select>
-          <p class="hint">Uses a local Piper HTTP server at localhost:5000. The server must have these voice models installed.</p>
+          <p class="hint">Kokoro neural voices (local TTS at localhost:5000).</p>
         </div>
 
         <div class="card">

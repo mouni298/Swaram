@@ -1,13 +1,20 @@
 import { createServer } from "node:http";
 
-// Thin CORS-enabled proxy in front of the official `piper.http_server`, which
-// keeps the voice model loaded in memory (~0.15s/request vs ~1.5s when the piper
-// CLI is cold-spawned per request). The browser PiperTTSProvider posts
-// text/plain to /api/tts with an X-Piper-Voice header; we translate that to the
-// backend's JSON API and stream the WAV back.
+// CORS-enabled TTS proxy. The browser PiperTTSProvider posts text/plain to
+// /api/tts with an X-Piper-Voice header; we translate that to the backend's JSON
+// API ({text, voice} -> WAV) and stream the WAV back.
+//
+// Routes by voice id, since both engines share the same JSON contract:
+//   te_* (Telugu Piper voices)  -> piper.http_server  (PIPER_TE_BACKEND)
+//   everything else (Kokoro)    -> kokoro server      (KOKORO_BACKEND)
 const port = Number(process.env.PORT ?? 5000);
-const backend = process.env.PIPER_BACKEND ?? "http://127.0.0.1:5001/";
-const defaultVoice = process.env.PIPER_DEFAULT_VOICE ?? "en_US-lessac-medium";
+const kokoroBackend = process.env.KOKORO_BACKEND ?? process.env.PIPER_BACKEND ?? "http://127.0.0.1:5002/";
+const teluguBackend = process.env.PIPER_TE_BACKEND ?? "http://127.0.0.1:5003/";
+const defaultVoice = process.env.PIPER_DEFAULT_VOICE ?? "af_heart";
+
+function backendForVoice(voice) {
+  return voice.startsWith("te_") ? teluguBackend : kokoroBackend;
+}
 
 function readBody(request) {
   return new Promise((resolve, reject) => {
@@ -83,7 +90,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    const backendResponse = await fetch(backend, {
+    const backendResponse = await fetch(backendForVoice(voice), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, voice }),
@@ -109,5 +116,5 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, () => {
-  console.log(`Piper proxy listening on http://localhost:${port}/api/tts -> ${backend}`);
+  console.log(`TTS proxy on http://localhost:${port}/api/tts -> kokoro ${kokoroBackend} | telugu ${teluguBackend}`);
 });

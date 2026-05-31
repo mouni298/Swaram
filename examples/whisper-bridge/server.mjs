@@ -2,9 +2,40 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
 const port = Number(process.env.PORT ?? 2022);
-const whisperUrl = process.env.WHISPER_URL ?? "http://127.0.0.1:2023/inference";
+const whisperBase = process.env.WHISPER_BASE ?? "http://127.0.0.1:2023";
+const whisperUrl = `${whisperBase}/inference`;
+const whisperLoadUrl = `${whisperBase}/load`;
 const ffmpegBin = process.env.FFMPEG_BIN ?? "ffmpeg";
 const debug = process.env.DEBUG === "1";
+
+// Model aliases the playground can request -> ggml paths (relative to the
+// whisper-server CWD, vendor/whisper.cpp). whisper-server's /load endpoint
+// hot-swaps the loaded model, so one server serves every model on demand.
+const MODELS = {
+  "small.en": "models/ggml-small.en.bin",
+  small: "models/ggml-small.bin",
+  medium: "models/ggml-medium.bin",
+  "large-v3": "models/ggml-large-v3.bin",
+};
+const DEFAULT_MODEL = process.env.WHISPER_DEFAULT_MODEL ?? "small.en";
+let loadedModel = DEFAULT_MODEL;
+
+async function ensureModelLoaded(alias) {
+  const wanted = MODELS[alias] ? alias : DEFAULT_MODEL;
+  if (wanted === loadedModel) {
+    return;
+  }
+  const form = new FormData();
+  form.append("model", MODELS[wanted]);
+  const res = await fetch(whisperLoadUrl, { method: "POST", body: form });
+  if (!res.ok) {
+    throw new Error(`whisper.cpp /load (${wanted}) failed with status ${res.status}.`);
+  }
+  loadedModel = wanted;
+  if (debug) {
+    console.log(`[debug] swapped whisper model -> ${wanted} (${MODELS[wanted]})`);
+  }
+}
 
 function readBody(request) {
   return new Promise((resolve, reject) => {
@@ -80,15 +111,27 @@ const server = createServer(async (request, response) => {
       throw new Error("Audio file part was empty.");
     }
 
+    const model = typeof form.get("model") === "string" ? form.get("model") : DEFAULT_MODEL;
+    const language = typeof form.get("language") === "string" ? form.get("language") : "";
+
     if (debug) {
-      console.log(`[debug] webm=${webm.length}B first8=${webm.subarray(0, 8).toString("hex")}`);
+      console.log(`[debug] webm=${webm.length}B model=${model} language=${language || "auto"}`);
     }
+
+    // Hot-swap the whisper model if the requested one differs from what's loaded.
+    await ensureModelLoaded(model);
 
     const wav = await transcodeToWav(webm);
 
     const whisperForm = new FormData();
     whisperForm.append("file", new Blob([wav], { type: "audio/wav" }), "speech.wav");
     whisperForm.append("response_format", "json");
+    // Tell whisper which language to decode (critical for hi/ja/te; "" = autodetect).
+    // whisper wants a 2-letter code, but the UI sends e.g. "hi-IN" / "te-IN".
+    const whisperLang = language ? language.slice(0, 2).toLowerCase() : "";
+    if (whisperLang) {
+      whisperForm.append("language", whisperLang);
+    }
 
     const whisperResponse = await fetch(whisperUrl, { method: "POST", body: whisperForm });
     if (!whisperResponse.ok) {

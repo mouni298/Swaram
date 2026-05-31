@@ -20,7 +20,11 @@ type VADModule = {
       minSpeechFrames?: number;
       redemptionFrames?: number;
       preSpeechPadFrames?: number;
-      additionalAudioConstraints?: MediaTrackConstraints;
+      // Custom microphone stream lifecycle. Lets callers feed a processed
+      // stream (e.g. RNNoise-denoised) into the VAD instead of a raw mic.
+      getStream?: () => Promise<MediaStream>;
+      pauseStream?: (stream: MediaStream) => Promise<void> | void;
+      resumeStream?: (stream: MediaStream) => Promise<MediaStream>;
     }) => Promise<MicVADInstance>;
   };
 };
@@ -39,8 +43,16 @@ type BrowserVADProviderOptions = {
   redemptionFrames?: number;
   /** Frames of audio kept before speech onset so the first word isn't clipped. */
   preSpeechPadFrames?: number;
-  /** Extra getUserMedia audio constraints, e.g. echo cancellation. */
-  additionalAudioConstraints?: MediaTrackConstraints;
+  /**
+   * Provide the microphone MediaStream. Use this to insert audio processing
+   * (e.g. an RNNoise denoiser worklet) between the mic and the VAD — the same
+   * processed stream then feeds STT in utterance ("vad") mode.
+   */
+  getStream?: () => Promise<MediaStream>;
+  /** Tear down the stream from getStream when the VAD pauses/stops. */
+  pauseStream?: (stream: MediaStream) => Promise<void> | void;
+  /** Rebuild the stream when the VAD resumes. */
+  resumeStream?: (stream: MediaStream) => Promise<MediaStream>;
   /** Called when a too-short segment is discarded as noise (a "misfire"). */
   onMisfire?: () => void;
 };
@@ -75,7 +87,9 @@ export class BrowserVADProvider implements VADProvider {
       ...(o.minSpeechFrames !== undefined ? { minSpeechFrames: o.minSpeechFrames } : {}),
       ...(o.redemptionFrames !== undefined ? { redemptionFrames: o.redemptionFrames } : {}),
       ...(o.preSpeechPadFrames !== undefined ? { preSpeechPadFrames: o.preSpeechPadFrames } : {}),
-      ...(o.additionalAudioConstraints ? { additionalAudioConstraints: o.additionalAudioConstraints } : {}),
+      ...(o.getStream ? { getStream: o.getStream } : {}),
+      ...(o.pauseStream ? { pauseStream: o.pauseStream } : {}),
+      ...(o.resumeStream ? { resumeStream: o.resumeStream } : {}),
       onSpeechStart: () => this.emit("speechStart", {}),
       onSpeechEnd: (audio) => this.emit("speechEnd", { audio }),
       onVADMisfire: () => o.onMisfire?.(),

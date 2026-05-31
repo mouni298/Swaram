@@ -4,11 +4,59 @@ import {
   PiperTTSProvider,
   StreamingVoiceSupportAgent,
   WhisperCppSTTProvider,
-  buildLanguageInstruction,
   ecommerceSupportTemplate,
-  supportedLanguages,
   voicePresets,
 } from "../../dist/index.js";
+import {
+  loadRnnoise,
+  RnnoiseWorkletNode,
+} from "/node_modules/@sapphi-red/web-noise-suppressor/dist/index.js";
+
+const NOISE_SUPPRESSOR_BASE = "/node_modules/@sapphi-red/web-noise-suppressor/dist";
+
+// Builds a single shared mic pipeline:  mic -> RNNoise denoiser -> clean stream.
+// The denoised stream feeds the VAD (and, in "vad" STT mode, Whisper too), so it
+// both improves transcription and stops background noise / echo from triggering
+// false barge-ins. RNNoise runs at 48kHz, so we pin the AudioContext to 48000.
+let denoisePipeline = null;
+
+async function buildDenoisedStream() {
+  const rawStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+
+  const context = new AudioContext({ sampleRate: 48000 });
+  const source = context.createMediaStreamSource(rawStream);
+
+  const wasmBinary = await loadRnnoise({
+    url: `${NOISE_SUPPRESSOR_BASE}/rnnoise.wasm`,
+    simdUrl: `${NOISE_SUPPRESSOR_BASE}/rnnoise_simd.wasm`,
+  });
+  await context.audioWorklet.addModule(`${NOISE_SUPPRESSOR_BASE}/rnnoise/workletProcessor.js`);
+  const rnnoise = new RnnoiseWorkletNode(context, { maxChannels: 1, wasmBinary });
+
+  const destination = context.createMediaStreamDestination();
+  source.connect(rnnoise).connect(destination);
+
+  denoisePipeline = { rawStream, context, rnnoise, destination };
+  return destination.stream;
+}
+
+function teardownDenoisedStream() {
+  if (!denoisePipeline) {
+    return;
+  }
+  const { rawStream, context, rnnoise, destination } = denoisePipeline;
+  denoisePipeline = null;
+  try {
+    rnnoise.disconnect();
+  } catch {
+    /* ignore */
+  }
+  destination.stream.getTracks().forEach((track) => track.stop());
+  rawStream.getTracks().forEach((track) => track.stop());
+  void context.close();
+}
 
 const instructions = document.querySelector("#instructions");
 const language = document.querySelector("#language");
@@ -39,45 +87,92 @@ groqKeyInput.addEventListener("input", () => {
   localStorage.setItem(GROQ_KEY_STORAGE, groqKeyInput.value.trim());
 });
 
+const sttModelSelect = document.querySelector("#transcription");
+
 instructions.value = ecommerceSupportTemplate.instructions;
 
-language.replaceChildren(
-  ...supportedLanguages.map((languageConfig) => {
-    const option = document.createElement("option");
-    option.value = languageConfig.id;
-    option.textContent = languageConfig.label;
-    return option;
-  }),
-);
-
-// Kokoro voices (TTS now runs on Kokoro). Prefix: a=American, b=British,
-// f=female, m=male. The voice id is sent through to the Kokoro server.
-const kokoroVoices = [
-  { id: "af_heart", label: "Heart — US female" },
-  { id: "af_bella", label: "Bella — US female" },
-  { id: "af_nicole", label: "Nicole — US female (soft)" },
-  { id: "af_sky", label: "Sky — US female" },
-  { id: "am_michael", label: "Michael — US male" },
-  { id: "am_adam", label: "Adam — US male" },
-  { id: "am_puck", label: "Puck — US male" },
-  { id: "bf_emma", label: "Emma — UK female" },
-  { id: "bf_isabella", label: "Isabella — UK female" },
-  { id: "bm_george", label: "George — UK male" },
-  { id: "bm_lewis", label: "Lewis — UK male" },
+// Supported languages, the LLM "respond in X" instruction, and the voices for
+// each. en/hi/ja use Kokoro voices; Telugu uses Piper voices (te_*), which the
+// TTS proxy routes to the Piper backend. The whisper language code is the first
+// two letters of the id (set by the bridge).
+// English only for now. Hindi/Telugu were dropped because the local models
+// (whisper STT, Kokoro/Piper TTS) aren't accurate enough for Indian languages;
+// revisit with purpose-built models (AI4Bharat/Sarvam) when needed.
+const LANGUAGES = [
+  {
+    id: "en-US",
+    label: "English (US)",
+    instruction: "Respond in English.",
+    voices: [
+      { id: "af_heart", label: "Heart — US female" },
+      { id: "af_bella", label: "Bella — US female" },
+      { id: "af_nicole", label: "Nicole — US female (soft)" },
+      { id: "af_sky", label: "Sky — US female" },
+      { id: "am_michael", label: "Michael — US male" },
+      { id: "am_adam", label: "Adam — US male" },
+      { id: "am_puck", label: "Puck — US male" },
+      { id: "bf_emma", label: "Emma — UK female" },
+      { id: "bf_isabella", label: "Isabella — UK female" },
+      { id: "bm_george", label: "George — UK male" },
+      { id: "bm_lewis", label: "Lewis — UK male" },
+    ],
+  },
 ];
 
-tts.replaceChildren(
-  ...kokoroVoices.map((voice) => {
-    const option = document.createElement("option");
-    option.value = voice.id;
-    option.textContent = voice.label;
-    return option;
-  }),
-);
+// whisper.cpp models the bridge can hot-swap to (small.en is the English default).
+const STT_MODELS = [
+  { id: "small.en", label: "small.en — fast (default)" },
+  { id: "small", label: "small — multilingual" },
+  { id: "medium", label: "medium — more accurate" },
+  { id: "large-v3", label: "large-v3 — best (slow)" },
+];
+
+function currentLanguage() {
+  return LANGUAGES.find((entry) => entry.id === language.value) ?? LANGUAGES[0];
+}
+
+function langInstruction(id) {
+  return (LANGUAGES.find((entry) => entry.id === id) ?? LANGUAGES[0]).instruction;
+}
+
+function effectiveSttModel() {
+  return sttModelSelect.value;
+}
+
+function populateVoicesForLanguage() {
+  tts.replaceChildren(
+    ...currentLanguage().voices.map((voice) => {
+      const option = document.createElement("option");
+      option.value = voice.id;
+      option.textContent = voice.label;
+      return option;
+    }),
+  );
+}
 
 function selectedVoiceLabel() {
   return tts.options[tts.selectedIndex]?.text ?? tts.value;
 }
+
+language.replaceChildren(
+  ...LANGUAGES.map((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.textContent = entry.label;
+    return option;
+  }),
+);
+
+sttModelSelect.replaceChildren(
+  ...STT_MODELS.map((model) => {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.textContent = model.label;
+    return option;
+  }),
+);
+
+populateVoicesForLanguage();
 
 let agent = createAgent();
 let lastUsedKey = (groqKeyInput.value || localStorage.getItem(GROQ_KEY_STORAGE) || "").trim();
@@ -145,13 +240,11 @@ function createVADProvider() {
     loadModule: () => Promise.resolve(window.vad),
     baseAssetPath: "/node_modules/@ricky0123/vad-web/dist/",
     onnxWASMBasePath: "/node_modules/onnxruntime-web/dist/",
-    // Stop the mic from hearing the agent's own playback (echo) so it doesn't
-    // self-interrupt, and damp background noise.
-    additionalAudioConstraints: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
+    // Feed the VAD an RNNoise-denoised mic stream (also requests the browser's
+    // built-in echo cancellation / noise suppression on the raw mic).
+    getStream: buildDenoisedStream,
+    pauseStream: () => teardownDenoisedStream(),
+    resumeStream: buildDenoisedStream,
     // Require clearer, more sustained speech before firing, so a stray noise or
     // residual echo doesn't register as the user barging in. (vad-web defaults
     // are ~0.5 / 3 frames.)
@@ -171,7 +264,7 @@ function createAgent() {
   };
 
   const nextAgent = new StreamingVoiceSupportAgent({
-    instructions: `${instructions.value}\n\n${buildLanguageInstruction(language.value)}`,
+    instructions: `${instructions.value}\n\n${langInstruction(language.value)}`,
     voice: selectedVoice,
     // whisper.cpp is utterance-based: send a complete WAV per turn from the VAD's
     // PCM instead of stitching headerless webm chunks (which broke turns 2+).
@@ -181,6 +274,8 @@ function createAgent() {
     stt: new WhisperCppSTTProvider({
       baseUrl: "http://localhost:2022",
       language: language.value,
+      // The bridge hot-swaps the whisper model to this alias before transcribing.
+      model: effectiveSttModel(),
     }),
     llm: new GroqStreamingLLMProvider({
       apiKey: (groqKeyInput.value || localStorage.getItem(GROQ_KEY_STORAGE) || "").trim(),
@@ -349,9 +444,18 @@ llm.addEventListener("change", () => {
 });
 
 language.addEventListener("change", () => {
+  populateVoicesForLanguage();
   agent.stop().catch(() => undefined);
   stopMicLevelMeter();
   agent = createAgent();
   statusPill.textContent = "Ready";
   statusCopy.textContent = `${language.options[language.selectedIndex].text} selected.`;
+});
+
+sttModelSelect.addEventListener("change", () => {
+  agent.stop().catch(() => undefined);
+  stopMicLevelMeter();
+  agent = createAgent();
+  statusPill.textContent = "Ready";
+  statusCopy.textContent = `Transcription model: ${sttModelSelect.options[sttModelSelect.selectedIndex].text}.`;
 });

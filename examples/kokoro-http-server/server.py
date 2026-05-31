@@ -36,6 +36,25 @@ kokoro = Kokoro(MODEL, VOICES)
 KNOWN_VOICES = set(kokoro.get_voices())
 print(f"Kokoro ready. {len(KNOWN_VOICES)} voices. Default: {DEFAULT_VOICE}", flush=True)
 
+# Kokoro phonemizes per language, so each voice must be synthesized with the
+# matching language code or it comes out garbled (Hindi/Japanese read as English).
+# The voice id's prefix encodes the accent/language.
+LANG_BY_PREFIX = {
+    "af": "en-us", "am": "en-us",
+    "bf": "en-gb", "bm": "en-gb",
+    "hf": "hi", "hm": "hi",
+    "jf": "ja", "jm": "ja",
+    "zf": "cmn", "zm": "cmn",
+    "ef": "es", "em": "es",
+    "ff": "fr",
+    "if": "it", "im": "it",
+    "pf": "pt-br", "pm": "pt-br",
+}
+
+
+def lang_for_voice(voice: str) -> str:
+    return LANG_BY_PREFIX.get(voice[:2], "en-us")
+
 
 def to_wav(samples: np.ndarray, sample_rate: int) -> bytes:
     pcm = np.clip(samples, -1.0, 1.0)
@@ -65,7 +84,7 @@ class Handler(BaseHTTPRequestHandler):
             requested = data.get("voice")
             voice = requested if requested in KNOWN_VOICES else DEFAULT_VOICE
 
-            samples, sample_rate = kokoro.create(text, voice=voice, speed=SPEED, lang="en-us")
+            samples, sample_rate = kokoro.create(text, voice=voice, speed=SPEED, lang=lang_for_voice(voice))
             audio = to_wav(np.asarray(samples), int(sample_rate))
 
             self.send_response(200)

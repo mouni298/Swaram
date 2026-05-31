@@ -7,7 +7,12 @@ tsconfig.tsbuildinfo
 # Vendored third-party tooling and downloadable model binaries
 vendor/
 *.onnx
+*.onnx.json
 *.bin
+
+# Python bytecode
+__pycache__/
+*.pyc
 
 # Local service logs (start-services.sh)
 .logs/
