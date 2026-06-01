@@ -21,6 +21,13 @@ export const ecommerceSupportTools: ToolDefinition[] = [
   {
     name: "lookup_order",
     description: "Look up the current shipping status for a demo store order.",
+    parameters: {
+      type: "object",
+      properties: {
+        orderId: { type: "string", description: "The customer's order ID." },
+      },
+      required: ["orderId"],
+    },
     run(args) {
       const orderId = getString(args, "orderId") ?? "UNKNOWN";
       const status = statusForOrder(orderId);
@@ -41,6 +48,14 @@ export const ecommerceSupportTools: ToolDefinition[] = [
   {
     name: "check_return_eligibility",
     description: "Check whether an order or item is eligible for return.",
+    parameters: {
+      type: "object",
+      properties: {
+        orderId: { type: "string", description: "The order ID to check." },
+        itemName: { type: "string", description: "The specific item to check, if known." },
+      },
+      required: ["orderId"],
+    },
     run(args) {
       return {
         orderId: getString(args, "orderId"),
@@ -54,6 +69,14 @@ export const ecommerceSupportTools: ToolDefinition[] = [
   {
     name: "create_return_request",
     description: "Create a return request for an eligible order.",
+    parameters: {
+      type: "object",
+      properties: {
+        orderId: { type: "string", description: "The order ID to return." },
+        reason: { type: "string", description: "Why the customer is returning the order." },
+      },
+      required: ["orderId"],
+    },
     run(args) {
       const orderId = getString(args, "orderId") ?? "UNKNOWN";
 
@@ -69,6 +92,14 @@ export const ecommerceSupportTools: ToolDefinition[] = [
   {
     name: "create_support_ticket",
     description: "Create a support ticket for follow-up or escalation.",
+    parameters: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "A short summary of the customer's issue." },
+        priority: { type: "string", enum: ["normal", "high"], description: "Ticket priority." },
+      },
+      required: ["summary"],
+    },
     run(args) {
       const priority = getString(args, "priority") ?? "normal";
       const summary = getString(args, "summary") ?? "Customer needs support";
@@ -85,6 +116,16 @@ export const ecommerceSupportTools: ToolDefinition[] = [
   {
     name: "search_policy",
     description: "Search demo support policy information.",
+    parameters: {
+      type: "object",
+      properties: {
+        topic: {
+          type: "string",
+          description: "The policy topic, e.g. refund, return, warranty, replacement.",
+        },
+      },
+      required: ["topic"],
+    },
     run(args) {
       const topic = getString(args, "topic") ?? "general";
       const normalized = topic.toLowerCase();

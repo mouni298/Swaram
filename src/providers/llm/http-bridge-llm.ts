@@ -1,3 +1,4 @@
+import { connectFetch, throwForStatus } from "../../core/http.js";
 import type { LLMStreamEvent, LLMStreamInput, StreamingLLMProvider } from "../../types.js";
 
 type BridgeEvent =
@@ -5,42 +6,50 @@ type BridgeEvent =
   | { type: "tool_call"; name: string; args?: Record<string, unknown> }
   | { type: "done"; text?: string; intent?: string };
 
-export class OpenAIStreamingLLMProvider implements StreamingLLMProvider {
-  readonly name = "openai-streaming-llm";
+/**
+ * Talks to a custom server-side bridge (your own endpoint) that does the actual
+ * provider call and streams back newline-delimited JSON events. Use this to keep
+ * vendor API keys server-side instead of in the browser. (Formerly
+ * `OpenAIStreamingLLMProvider` — it never spoke the OpenAI wire protocol
+ * directly, hence the rename.)
+ */
+export class HttpBridgeLLMProvider implements StreamingLLMProvider {
+  readonly name = "http-bridge-llm";
   private abortController: AbortController | null = null;
 
   constructor(
     private readonly options: {
       bridgeUrl: string;
       fetchImpl?: typeof fetch;
+      timeoutMs?: number;
+      maxRetries?: number;
     },
   ) {}
 
   async *stream(input: LLMStreamInput, options: { signal?: AbortSignal } = {}): AsyncIterable<LLMStreamEvent> {
     this.abortController = new AbortController();
-    const fetchImpl = this.options.fetchImpl ?? fetch;
     const signal = this.abortController.signal;
 
-    options.signal?.addEventListener(
-      "abort",
-      () => {
-        this.abort();
+    options.signal?.addEventListener("abort", () => this.abort(), { once: true });
+
+    const response = await connectFetch(
+      this.options.bridgeUrl,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
       },
-      { once: true },
+      {
+        signal,
+        fetchImpl: this.options.fetchImpl,
+        ...(this.options.timeoutMs !== undefined ? { timeoutMs: this.options.timeoutMs } : {}),
+        ...(this.options.maxRetries !== undefined ? { maxRetries: this.options.maxRetries } : {}),
+      },
     );
 
-    const response = await fetchImpl(this.options.bridgeUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(input),
-      signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`OpenAI bridge failed with status ${response.status}.`);
-    }
+    await throwForStatus(response, "LLM bridge request");
 
     if (!response.body) {
       const event = (await response.json()) as BridgeEvent;
@@ -110,3 +119,6 @@ export class OpenAIStreamingLLMProvider implements StreamingLLMProvider {
     };
   }
 }
+
+/** @deprecated Renamed to {@link HttpBridgeLLMProvider}. */
+export { HttpBridgeLLMProvider as OpenAIStreamingLLMProvider };

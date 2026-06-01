@@ -1,4 +1,6 @@
+import { connectFetch, throwForStatus } from "../../core/http.js";
 import type { LLMStreamEvent, LLMStreamInput, StreamingLLMProvider } from "../../types.js";
+import { buildChatMessages, buildChatTools } from "./chat-messages.js";
 import { ToolJsonStreamSplitter, buildToolJsonSystemPrompt } from "./tool-json-stream.js";
 
 type OllamaStreamChunk = {
@@ -26,6 +28,8 @@ export class OllamaStreamingLLMProvider implements StreamingLLMProvider {
       model?: string;
       fetchImpl?: typeof fetch;
       systemPrompt?: string;
+      timeoutMs?: number;
+      maxRetries?: number;
     } = {},
   ) {}
 
@@ -34,31 +38,32 @@ export class OllamaStreamingLLMProvider implements StreamingLLMProvider {
     const signal = this.abortController.signal;
     options.signal?.addEventListener("abort", () => this.abort(), { once: true });
 
-    const response = await (this.options.fetchImpl ?? fetch)(this.url(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.options.model ?? "llama3.1:8b",
-        stream: true,
-        messages: [
-          {
-            role: "system",
-            content: this.options.systemPrompt ?? buildToolJsonSystemPrompt(input.instructions),
-          },
-          ...input.transcript
-            .filter((message) => message.role !== "system")
-            .map((message) => ({ role: message.role, content: message.content })),
-          { role: "user", content: input.input },
-        ],
-      }),
-      signal,
-    });
+    const tools = buildChatTools(input.tools);
+    const systemPrompt = this.options.systemPrompt ?? (tools ? input.instructions : buildToolJsonSystemPrompt(input.instructions));
 
-    if (!response.ok) {
-      throw new Error(`Ollama request failed with status ${response.status}.`);
-    }
+    const response = await connectFetch(
+      this.url(),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.options.model ?? "llama3.1:8b",
+          stream: true,
+          messages: buildChatMessages(input, systemPrompt),
+          ...(tools ? { tools } : {}),
+        }),
+      },
+      {
+        signal,
+        fetchImpl: this.options.fetchImpl,
+        ...(this.options.timeoutMs !== undefined ? { timeoutMs: this.options.timeoutMs } : {}),
+        ...(this.options.maxRetries !== undefined ? { maxRetries: this.options.maxRetries } : {}),
+      },
+    );
+
+    await throwForStatus(response, "Ollama request");
 
     if (!response.body) {
       return;

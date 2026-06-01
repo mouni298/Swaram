@@ -3,41 +3,18 @@ import { InterruptionController } from "./interruption-controller.js";
 import { AudioPlaybackQueue } from "./audio-playback-queue.js";
 import { TypedEventEmitter } from "./event-emitter.js";
 import { ToolRegistry } from "./tool-registry.js";
+import { MAX_TOOL_ROUNDS, createId, createMessage, createToolCall, latestUserText } from "./session.js";
 import { encodeWavFromFloat32 } from "./wav.js";
 import type {
   AudioChunk,
-  LLMStreamEvent,
+  PlannedToolCall,
   StreamingAgentStatus,
   StreamingVoiceSupportAgentConfig,
   StreamingVoiceSupportAgentEventMap,
-  ToolCall,
   TranscriptDelta,
   TranscriptMessage,
   Unsubscribe,
 } from "../types.js";
-
-function createId() {
-  return globalThis.crypto?.randomUUID?.() ?? `swaram_${Date.now()}_${Math.random()}`;
-}
-
-function createMessage(role: TranscriptMessage["role"], content: string): TranscriptMessage {
-  return {
-    id: createId(),
-    role,
-    content,
-    createdAt: new Date(),
-  };
-}
-
-function createToolCall(name: string, args: Record<string, unknown>, result?: unknown): ToolCall {
-  return {
-    id: createId(),
-    name,
-    args,
-    result,
-    createdAt: new Date(),
-  };
-}
 
 function hasError(payload: unknown): payload is { error: Error } {
   return Boolean(payload && typeof payload === "object" && "error" in payload);
@@ -57,7 +34,7 @@ export class StreamingVoiceSupportAgent {
   readonly tools: ToolRegistry;
   readonly playback: AudioPlaybackQueue;
   private transcript: TranscriptMessage[] = [];
-  private toolCalls: ToolCall[] = [];
+  private toolCalls: ReturnType<typeof createToolCall>[] = [];
   private status: StreamingAgentStatus = "idle";
   private abortController: AbortController | null = null;
   private mediaRecorder: MediaRecorder | null = null;
@@ -133,6 +110,8 @@ export class StreamingVoiceSupportAgent {
       throw this.fail(new SwaramError("CONCURRENT_TURN", "A streaming voice session is already active."));
     }
 
+    this.assertProvidersSupported();
+
     this.abortController = new AbortController();
     this.sessionActive = true;
     this.setStatus("listening");
@@ -192,6 +171,18 @@ export class StreamingVoiceSupportAgent {
     }
 
     await this.respondToFinalTranscript(text);
+  }
+
+  private assertProvidersSupported() {
+    if (this.config.stt.isSupported?.() === false) {
+      throw this.fail(new SwaramError("STT_UNSUPPORTED", `STT provider "${this.config.stt.name}" is not supported.`));
+    }
+    if (this.config.llm.isSupported?.() === false) {
+      throw this.fail(new SwaramError("LLM_UNSUPPORTED", `LLM provider "${this.config.llm.name}" is not supported.`));
+    }
+    if (this.config.tts.isSupported?.() === false) {
+      throw this.fail(new SwaramError("TTS_UNSUPPORTED", `TTS provider "${this.config.tts.name}" is not supported.`));
+    }
   }
 
   private bindProviderEvents() {
@@ -319,51 +310,32 @@ export class StreamingVoiceSupportAgent {
     this.addMessage("user", text);
     this.setStatus("thinking");
 
-    let assistantText = "";
-    let textBuffer = "";
-
     try {
-      for await (const event of this.config.llm.stream(
-        {
-          input: text,
-          transcript: this.getTranscript(),
-          instructions: this.instructions,
-          toolCalls: this.getToolCalls(),
-        },
-        {
-          ...(this.abortController?.signal ? { signal: this.abortController.signal } : {}),
-        },
-      )) {
-        await this.handleLLMEvent(event);
+      let spokeAnything = false;
 
-        if (event.type === "text") {
-          assistantText += event.text;
-          textBuffer += event.text;
-          this.events.emit("llmToken", { text: event.text });
+      // Tool loop: stream a reply; if the model called tools, run them, feed the
+      // results back into the transcript, and re-prompt so the spoken answer is
+      // grounded in those results. Repeat until a round makes no tool calls.
+      for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
+        const { text: roundText, toolCalls } = await this.streamRound();
 
-          if (this.status !== "speaking") {
-            this.setStatus("speaking");
-          }
-
-          if (/[.!?]["')\]]?\s*$/.test(textBuffer) || textBuffer.length >= 80) {
-            this.config.tts.sendText(textBuffer);
-            textBuffer = "";
-          }
+        if (roundText) {
+          spokeAnything = true;
+          this.addMessage("assistant", roundText);
         }
-      }
 
-      if (textBuffer) {
-        this.config.tts.sendText(textBuffer);
+        if (toolCalls.length === 0) {
+          break;
+        }
+
+        await this.runToolCalls(toolCalls);
       }
 
       this.config.tts.flush();
-      if (assistantText) {
-        this.addMessage("assistant", assistantText);
-      }
-      // Don't force "listening" here — audio is still synthesizing/playing.
-      // Playback's onEnd moves us back to "listening". Only do it now if there's
-      // no audio coming (e.g. an empty or tool-only response).
-      if (!assistantText && !this.playback.isActive()) {
+
+      // Don't force "listening" if audio is still synthesizing/playing — playback's
+      // onEnd handles that. Only settle now for an empty / tool-only response.
+      if (!spokeAnything && !this.playback.isActive()) {
         this.setStatus(this.sessionActive ? "listening" : "idle");
       }
     } catch (error) {
@@ -376,23 +348,73 @@ export class StreamingVoiceSupportAgent {
     }
   }
 
-  private async handleLLMEvent(event: LLMStreamEvent) {
-    if (event.type !== "toolCall") {
-      return;
+  /** Stream one LLM response, speaking text as it arrives. Returns text + tool calls. */
+  private async streamRound(): Promise<{ text: string; toolCalls: PlannedToolCall[] }> {
+    let assistantText = "";
+    let textBuffer = "";
+    const toolCalls: PlannedToolCall[] = [];
+    const toolSchemas = this.tools.schemas();
+
+    for await (const event of this.config.llm.stream(
+      {
+        // The latest user turn. SDK providers build messages from `transcript`
+        // (and de-dupe this), but a raw passthrough like HttpBridgeLLMProvider
+        // relies on `input` carrying the question.
+        input: latestUserText(this.transcript),
+        transcript: this.getTranscript(),
+        instructions: this.instructions,
+        toolCalls: this.getToolCalls(),
+        ...(toolSchemas ? { tools: toolSchemas } : {}),
+      },
+      {
+        ...(this.abortController?.signal ? { signal: this.abortController.signal } : {}),
+      },
+    )) {
+      if (event.type === "toolCall") {
+        toolCalls.push({ name: event.name, args: event.args });
+        continue;
+      }
+
+      if (event.type === "text") {
+        assistantText += event.text;
+        textBuffer += event.text;
+        this.events.emit("llmToken", { text: event.text });
+
+        if (this.status !== "speaking") {
+          this.setStatus("speaking");
+        }
+
+        if (/[.!?]["')\]]?\s*$/.test(textBuffer) || textBuffer.length >= 80) {
+          this.config.tts.sendText(textBuffer);
+          textBuffer = "";
+        }
+      }
     }
 
-    const result = await this.tools.run(event.name, event.args, {
-      sessionId: this.sessionId,
-      transcript: this.getTranscript(),
-      instructions: this.instructions,
-    });
-    const completedCall = createToolCall(event.name, event.args, result);
-    this.toolCalls.push(completedCall);
-    this.events.emit("toolCall", { toolCall: completedCall });
+    if (textBuffer) {
+      this.config.tts.sendText(textBuffer);
+    }
+
+    return { text: assistantText, toolCalls };
   }
 
-  private addMessage(role: TranscriptMessage["role"], content: string) {
-    const message = createMessage(role, content);
+  private async runToolCalls(plannedCalls: PlannedToolCall[]) {
+    for (const planned of plannedCalls) {
+      const result = await this.tools.run(planned.name, planned.args, {
+        sessionId: this.sessionId,
+        transcript: this.getTranscript(),
+        instructions: this.instructions,
+      });
+      const completedCall = createToolCall(planned.name, planned.args, result);
+      this.toolCalls.push(completedCall);
+      this.events.emit("toolCall", { toolCall: completedCall });
+      // Feed the result back so the next round's reply is grounded in it.
+      this.addMessage("tool", JSON.stringify(result ?? null), planned.name);
+    }
+  }
+
+  private addMessage(role: TranscriptMessage["role"], content: string, name?: string) {
+    const message = createMessage(role, content, name);
     this.transcript.push(message);
     this.events.emit("transcript", {
       message,

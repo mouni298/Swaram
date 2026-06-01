@@ -10,12 +10,20 @@ The SDK is domain-agnostic. E-commerce support is included only as the first exa
 npm install swaram-ai
 ```
 
+Requires Node 18+ (uses the global `fetch`/`AbortSignal`). The package is
+ESM-only. The phone transport's `ws`/`twilio` are optional peer dependencies —
+install them only if you use the ConversationRelay example.
+
 ## Quickstart
+
+The default cloud stack uses Groq for low-latency streaming. The model is
+configurable; an API key can come from the constructor or the `GROQ_API_KEY`
+environment variable.
 
 ```ts
 import {
   BrowserVADProvider,
-  OllamaStreamingLLMProvider,
+  GroqStreamingLLMProvider,
   PiperTTSProvider,
   StreamingVoiceSupportAgent,
   WhisperCppSTTProvider,
@@ -30,9 +38,9 @@ const agent = new StreamingVoiceSupportAgent({
   stt: new WhisperCppSTTProvider({
     baseUrl: "http://localhost:2022",
   }),
-  llm: new OllamaStreamingLLMProvider({
-    baseUrl: "http://localhost:11434",
-    model: "llama3.1:8b",
+  llm: new GroqStreamingLLMProvider({
+    apiKey: process.env.GROQ_API_KEY,
+    model: "llama-3.1-8b-instant", // configurable
   }),
   tts: new PiperTTSProvider({
     baseUrl: "http://localhost:5000",
@@ -47,6 +55,11 @@ agent.on("error", ({ error }) => console.error(error));
 await agent.start();
 ```
 
+Other LLM providers ship in the box: `OllamaStreamingLLMProvider` (local-first),
+`AnthropicStreamingLLMProvider` (native tools + prompt caching), and
+`HttpBridgeLLMProvider` (talk to your own server-side bridge to keep vendor keys
+off the client).
+
 ## Core Concepts
 
 - `VoiceSupportAgent`: coordinates the full support-agent turn.
@@ -55,6 +68,47 @@ await agent.start();
 - `ToolDefinition`: runs business logic.
 - `TTSProvider`: speaks the assistant response.
 - `SupportTemplate`: optional starter instructions and tools for a domain.
+
+## Tools & function calling
+
+A tool declares a JSON Schema for its arguments via `parameters`. When present,
+the SDK advertises it to the model using the provider's native function-calling
+API (Groq/OpenAI-style `tools`, Anthropic `tools`, Ollama `tools`). Providers
+without a declared schema fall back to a prompt-based JSON convention.
+
+```ts
+const tool = {
+  name: "lookup_order",
+  description: "Look up the current shipping status for an order.",
+  parameters: {
+    type: "object",
+    properties: { orderId: { type: "string" } },
+    required: ["orderId"],
+  },
+  run: async ({ orderId }) => fetchOrderStatus(orderId),
+};
+```
+
+Tool results are fed back into the conversation and the model is re-prompted, so
+the spoken answer is grounded in what the tool returned. The loop runs until a
+turn makes no further tool calls (capped to avoid runaways).
+
+## Error handling
+
+Provider and agent failures surface as a typed `SwaramError` with a `code`
+(`AUTH`, `RATE_LIMITED`, `TIMEOUT`, `HTTP_ERROR`, `PROVIDER_FAILURE`,
+`TURN_ABORTED`, …) and, for HTTP failures, the `status`. HTTP providers apply a
+connect timeout and retry transient failures with exponential backoff.
+
+```ts
+import { SwaramError } from "swaram-ai";
+
+agent.on("error", ({ error }) => {
+  if (error instanceof SwaramError && error.code === "AUTH") {
+    // bad or missing API key
+  }
+});
+```
 
 ## Streaming Voice Agents
 
@@ -158,12 +212,14 @@ Pull the default local LLM:
 ollama pull llama3.1:8b
 ```
 
-Hosted provider examples still exist under `examples/streaming-browser` and `examples/server-bridge`, but they are optional.
+Hosted/cloud provider examples still exist under `examples/streaming-browser` and `examples/server-bridge` (the latter uses `HttpBridgeLLMProvider` to keep vendor keys server-side), but they are optional.
 
 ## Roadmap
 
-- Kokoro TTS adapter for higher-quality local voices.
 - True local partial STT streaming when the chosen Whisper server supports it reliably.
-- Interruptions and barge-in.
-- Phone-call transport.
+- Full tool_call_id round-tripping for providers that require it (today tool results are fed back as model context).
+- Subpath exports for finer-grained tree-shaking.
 - More support templates.
+
+Shipped: interruptions/barge-in, phone-call transport (Twilio ConversationRelay),
+native function calling, and a typed error model.

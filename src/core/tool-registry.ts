@@ -1,5 +1,5 @@
 import { SwaramError } from "./errors.js";
-import type { ToolContext, ToolDefinition } from "../types.js";
+import type { ToolContext, ToolDefinition, ToolSchema } from "../types.js";
 
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
@@ -24,6 +24,23 @@ export class ToolRegistry {
 
   list() {
     return Array.from(this.tools.values());
+  }
+
+  /**
+   * Tool schemas to advertise to a model for native function calling. Tools that
+   * didn't declare `parameters` are advertised with an empty object schema.
+   * Returns undefined when there are no tools, so callers can omit the field.
+   */
+  schemas(): ToolSchema[] | undefined {
+    if (this.tools.size === 0) {
+      return undefined;
+    }
+
+    return this.list().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters ?? { type: "object" },
+    }));
   }
 
   async run(name: string, args: Record<string, unknown>, context: ToolContext) {

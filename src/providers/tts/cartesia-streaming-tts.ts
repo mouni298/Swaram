@@ -1,4 +1,7 @@
-import type { AudioChunk, StreamingTTSProvider, TTSConnectOptions, Unsubscribe } from "../../types.js";
+import { ProviderEmitter } from "../../core/provider-emitter.js";
+import { readEnv } from "../../core/env.js";
+import { SwaramError } from "../../core/errors.js";
+import type { AudioChunk, StreamingTTSProvider, TTSConnectOptions } from "../../types.js";
 
 type WebSocketLike = {
   binaryType?: BinaryType;
@@ -8,19 +11,22 @@ type WebSocketLike = {
   addEventListener: (event: "open" | "message" | "error" | "close", handler: (event: Event | MessageEvent) => void) => void;
 };
 
-export class CartesiaStreamingTTSProvider implements StreamingTTSProvider {
+type TTSPayload = AudioChunk | { error: Error };
+type TTSEvent = "audio" | "start" | "end" | "error";
+
+const EMPTY_CHUNK: AudioChunk = { data: new Uint8Array() };
+
+export class CartesiaStreamingTTSProvider
+  extends ProviderEmitter<TTSEvent, TTSPayload>
+  implements StreamingTTSProvider
+{
   readonly name = "cartesia-streaming-tts";
+  private readonly apiKey: string;
   private socket: WebSocketLike | null = null;
-  private handlers = {
-    audio: new Set<(payload: AudioChunk | { error: Error }) => void>(),
-    start: new Set<(payload: AudioChunk | { error: Error }) => void>(),
-    end: new Set<(payload: AudioChunk | { error: Error }) => void>(),
-    error: new Set<(payload: AudioChunk | { error: Error }) => void>(),
-  };
 
   constructor(
     private readonly options: {
-      apiKey: string;
+      apiKey?: string;
       voiceId: string;
       modelId?: string;
       url?: string;
@@ -31,9 +37,22 @@ export class CartesiaStreamingTTSProvider implements StreamingTTSProvider {
       };
       createWebSocket?: (url: string) => WebSocketLike;
     },
-  ) {}
+  ) {
+    super(["audio", "start", "end", "error"]);
+    this.apiKey = options.apiKey ?? readEnv("CARTESIA_API_KEY") ?? "";
+  }
+
+  isSupported() {
+    return Boolean(this.apiKey) && (Boolean(this.options.createWebSocket) || typeof WebSocket !== "undefined");
+  }
 
   connect(options: TTSConnectOptions = {}) {
+    if (!this.apiKey) {
+      return Promise.reject(
+        new SwaramError("AUTH", "CartesiaStreamingTTSProvider requires an apiKey (or set CARTESIA_API_KEY)."),
+      );
+    }
+
     return new Promise<void>((resolve, reject) => {
       const url = this.buildUrl();
       const socket = this.options.createWebSocket ? this.options.createWebSocket(url) : new WebSocket(url);
@@ -41,12 +60,12 @@ export class CartesiaStreamingTTSProvider implements StreamingTTSProvider {
       this.socket = socket;
 
       socket.addEventListener("open", () => {
-        this.emit("start", new Uint8Array());
+        this.emit("start", EMPTY_CHUNK);
         resolve();
       });
       socket.addEventListener("message", (event) => this.handleMessage(event as MessageEvent));
       socket.addEventListener("error", () => {
-        const error = new Error("Cartesia streaming TTS connection failed.");
+        const error = new SwaramError("PROVIDER_FAILURE", "Cartesia streaming TTS connection failed.");
         this.emit("error", { error });
         reject(error);
       });
@@ -92,22 +111,12 @@ export class CartesiaStreamingTTSProvider implements StreamingTTSProvider {
   close() {
     this.socket?.close();
     this.socket = null;
-    this.emit("end", new Uint8Array());
-  }
-
-  on(
-    event: "audio" | "start" | "end" | "error",
-    handler: (payload: AudioChunk | { error: Error }) => void,
-  ): Unsubscribe {
-    this.handlers[event].add(handler);
-    return () => {
-      this.handlers[event].delete(handler);
-    };
+    this.emit("end", EMPTY_CHUNK);
   }
 
   private buildUrl() {
     const url = new URL(this.options.url ?? "wss://api.cartesia.ai/tts/websocket");
-    url.searchParams.set("api_key", this.options.apiKey);
+    url.searchParams.set("api_key", this.apiKey);
     return url.toString();
   }
 
@@ -131,17 +140,10 @@ export class CartesiaStreamingTTSProvider implements StreamingTTSProvider {
       }
 
       if (parsed.error) {
-        this.emit("error", { error: new Error(parsed.error) });
+        this.emit("error", { error: new SwaramError("PROVIDER_FAILURE", parsed.error) });
       } else if (parsed.done || parsed.type === "done") {
-        this.emit("end", new Uint8Array());
+        this.emit("end", EMPTY_CHUNK);
       }
-    }
-  }
-
-  private emit(event: "audio" | "start" | "end" | "error", payload: AudioChunk | { error: Error } | Uint8Array) {
-    const normalized = payload instanceof Uint8Array ? { data: payload } : payload;
-    for (const handler of this.handlers[event]) {
-      handler(normalized);
     }
   }
 }

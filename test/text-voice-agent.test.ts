@@ -18,6 +18,24 @@ class MockLLM implements StreamingLLMProvider {
   }
 }
 
+// An LLM that returns a different scripted set of events on each call, modelling
+// real function calling: round 1 emits a tool call, round 2 the grounded answer.
+class ScriptedLLM implements StreamingLLMProvider {
+  readonly name = "scripted-llm";
+  abort = vi.fn();
+  private call = 0;
+
+  constructor(private readonly rounds: LLMStreamEvent[][]) {}
+
+  async *stream() {
+    const events = this.rounds[this.call] ?? [];
+    this.call += 1;
+    for (const event of events) {
+      yield event;
+    }
+  }
+}
+
 // An LLM that never finishes until aborted, to exercise interruption.
 class HangingLLM implements StreamingLLMProvider {
   readonly name = "hanging-llm";
@@ -61,9 +79,9 @@ describe("TextVoiceAgent", () => {
   it("runs tools and never emits tool JSON as tokens", async () => {
     const agent = new TextVoiceAgent({
       template: ecommerceSupportTemplate,
-      llm: new MockLLM([
-        { type: "toolCall", name: "lookup_order", args: { orderId: "12345" } },
-        { type: "text", text: "Your order is on the way." },
+      llm: new ScriptedLLM([
+        [{ type: "toolCall", name: "lookup_order", args: { orderId: "12345" } }],
+        [{ type: "text", text: "Your order is on the way." }],
       ]),
     });
     const tokens: string[] = [];
@@ -71,11 +89,14 @@ describe("TextVoiceAgent", () => {
     agent.on("token", ({ text }) => tokens.push(text));
     agent.on("toolCall", ({ toolCall }) => toolNames.push(toolCall.name));
 
-    await agent.handlePrompt("where is order 12345");
+    const reply = await agent.handlePrompt("where is order 12345");
 
     expect(toolNames).toEqual(["lookup_order"]);
     expect(tokens).toEqual(["Your order is on the way."]);
+    expect(reply).toBe("Your order is on the way.");
     expect(agent.getToolCalls()).toHaveLength(1);
+    // The tool result was fed back into the transcript before the grounded reply.
+    expect(agent.getTranscript().map((m) => m.role)).toEqual(["system", "user", "tool", "assistant"]);
   });
 
   it("aborts the in-flight reply on interrupt", async () => {

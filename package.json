@@ -1,11 +1,33 @@
 {
   "name": "swaram-ai",
   "version": "0.1.0",
-  "private": true,
   "description": "A from-scratch TypeScript SDK for building domain-agnostic voice support agents.",
+  "license": "MIT",
+  "author": "Mounika Grandhi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mouni298/Swaram.git"
+  },
+  "homepage": "https://github.com/mouni298/Swaram#readme",
+  "bugs": {
+    "url": "https://github.com/mouni298/Swaram/issues"
+  },
+  "keywords": [
+    "voice",
+    "voice-agent",
+    "ai",
+    "speech-to-text",
+    "text-to-speech",
+    "llm",
+    "tts",
+    "stt",
+    "agent",
+    "sdk"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -15,8 +37,12 @@
   "files": [
     "dist",
     "examples",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
@@ -25,17 +51,29 @@
   },
   "dependencies": {
     "@ricky0123/vad-web": "0.0.29",
-    "@sapphi-red/web-noise-suppressor": "^0.3.5",
-    "dotenv": "^17.4.2",
+    "@sapphi-red/web-noise-suppressor": "^0.3.5"
+  },
+  "peerDependencies": {
     "twilio": "^6.0.2",
     "ws": "^8.21.0"
+  },
+  "peerDependenciesMeta": {
+    "twilio": {
+      "optional": true
+    },
+    "ws": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@eslint/js": "9.16.0",
     "@types/node": "22.10.1",
+    "dotenv": "^17.4.2",
     "eslint": "9.16.0",
+    "twilio": "^6.0.2",
     "typescript": "5.7.2",
     "typescript-eslint": "8.18.0",
-    "vitest": "2.1.8"
+    "vitest": "2.1.8",
+    "ws": "^8.21.0"
   }
 }

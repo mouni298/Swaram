@@ -1,4 +1,8 @@
+import { SwaramError } from "../../core/errors.js";
+import { readEnv } from "../../core/env.js";
+import { connectFetch, throwForStatus } from "../../core/http.js";
 import type { LLMStreamEvent, LLMStreamInput, StreamingLLMProvider } from "../../types.js";
+import { buildChatMessages, buildChatTools } from "./chat-messages.js";
 import { ToolJsonStreamSplitter, buildToolJsonSystemPrompt } from "./tool-json-stream.js";
 
 type GroqDelta = {
@@ -22,57 +26,69 @@ type GroqStreamChunk = {
 
 export class GroqStreamingLLMProvider implements StreamingLLMProvider {
   readonly name = "groq-streaming-llm";
+  private readonly apiKey: string;
   private abortController: AbortController | null = null;
 
   constructor(
     private readonly options: {
-      apiKey: string;
+      apiKey?: string;
       model?: string;
       baseUrl?: string;
       endpoint?: string;
       fetchImpl?: typeof fetch;
       systemPrompt?: string;
       temperature?: number;
-    },
-  ) {}
+      timeoutMs?: number;
+      maxRetries?: number;
+    } = {},
+  ) {
+    this.apiKey = options.apiKey ?? readEnv("GROQ_API_KEY") ?? "";
+  }
+
+  isSupported() {
+    return Boolean(this.apiKey);
+  }
 
   async *stream(input: LLMStreamInput, options: { signal?: AbortSignal } = {}): AsyncIterable<LLMStreamEvent> {
-    if (!this.options.apiKey) {
-      throw new Error("GroqStreamingLLMProvider requires an apiKey. Enter your Groq API key in the playground.");
+    if (!this.apiKey) {
+      throw new SwaramError("AUTH", "GroqStreamingLLMProvider requires an apiKey (or set GROQ_API_KEY).");
     }
 
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
     options.signal?.addEventListener("abort", () => this.abort(), { once: true });
 
-    const response = await (this.options.fetchImpl ?? fetch)(this.url(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.options.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.options.model ?? "llama-3.1-8b-instant",
-        stream: true,
-        temperature: this.options.temperature ?? 0.5,
-        messages: [
-          {
-            role: "system",
-            content: this.options.systemPrompt ?? buildToolJsonSystemPrompt(input.instructions),
-          },
-          ...input.transcript
-            .filter((message) => message.role !== "system")
-            .map((message) => ({ role: message.role, content: message.content })),
-          { role: "user", content: input.input },
-        ],
-      }),
-      signal,
-    });
+    const tools = buildChatTools(input.tools);
+    // With native tools advertised, let the model use real function calling and
+    // keep the system prompt to just the instructions. Without tools, fall back
+    // to the prompt-based JSON convention parsed by ToolJsonStreamSplitter.
+    const systemPrompt = this.options.systemPrompt ?? (tools ? input.instructions : buildToolJsonSystemPrompt(input.instructions));
 
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(`Groq request failed with status ${response.status}. ${detail}`.trim());
-    }
+    const response = await connectFetch(
+      this.url(),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.options.model ?? "llama-3.1-8b-instant",
+          stream: true,
+          temperature: this.options.temperature ?? 0.5,
+          messages: buildChatMessages(input, systemPrompt),
+          ...(tools ? { tools } : {}),
+        }),
+      },
+      {
+        signal,
+        fetchImpl: this.options.fetchImpl,
+        ...(this.options.timeoutMs !== undefined ? { timeoutMs: this.options.timeoutMs } : {}),
+        ...(this.options.maxRetries !== undefined ? { maxRetries: this.options.maxRetries } : {}),
+      },
+    );
+
+    await throwForStatus(response, "Groq request");
 
     if (!response.body) {
       return;

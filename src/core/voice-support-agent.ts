@@ -1,6 +1,7 @@
 import { SwaramError, toSwaramError } from "./errors.js";
 import { TypedEventEmitter } from "./event-emitter.js";
 import { ToolRegistry } from "./tool-registry.js";
+import { createId, createMessage, createToolCall } from "./session.js";
 import type {
   AgentStatus,
   SupportAgentConfig,
@@ -10,29 +11,6 @@ import type {
   Unsubscribe,
   VoiceSupportAgentEventMap,
 } from "../types.js";
-
-function createId() {
-  return globalThis.crypto?.randomUUID?.() ?? `swaram_${Date.now()}_${Math.random()}`;
-}
-
-function createMessage(role: TranscriptMessage["role"], content: string): TranscriptMessage {
-  return {
-    id: createId(),
-    role,
-    content,
-    createdAt: new Date(),
-  };
-}
-
-function createToolCall(name: string, args: Record<string, unknown>, result?: unknown): ToolCall {
-  return {
-    id: createId(),
-    name,
-    args,
-    result,
-    createdAt: new Date(),
-  };
-}
 
 export class VoiceSupportAgent {
   readonly sessionId = createId();
@@ -119,11 +97,13 @@ export class VoiceSupportAgent {
     this.setStatus("thinking");
 
     try {
+      const toolSchemas = this.tools.schemas();
       const modelOutput = await this.config.llm.generate({
         input: cleanInput,
         transcript: this.getTranscript(),
         instructions: this.instructions,
         toolCalls: this.getToolCalls(),
+        ...(toolSchemas ? { tools: toolSchemas } : {}),
       });
 
       const executedThisTurn: ToolCall[] = [];

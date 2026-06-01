@@ -11,13 +11,15 @@ export type StreamingAgentStatus =
   | "stopped"
   | "error";
 
-export type Role = "user" | "assistant" | "system";
+export type Role = "user" | "assistant" | "system" | "tool";
 
 export type TranscriptMessage = {
   id: string;
   role: Role;
   content: string;
   createdAt: Date;
+  /** For `tool` messages: the name of the tool whose result this carries. */
+  name?: string;
 };
 
 export type VoiceConfig = {
@@ -66,13 +68,38 @@ export type ToolContext = {
   instructions: string;
 };
 
+/**
+ * JSON Schema describing a tool's arguments, advertised to the model for native
+ * function calling. Use a standard object schema, e.g.
+ * `{ type: "object", properties: { orderId: { type: "string" } }, required: ["orderId"] }`.
+ */
+export type ToolParameterSchema = {
+  type: "object";
+  properties?: Record<string, unknown>;
+  required?: string[];
+  [key: string]: unknown;
+};
+
 export type ToolDefinition<
   TArgs extends Record<string, unknown> = Record<string, unknown>,
   TResult = unknown,
 > = {
   name: string;
   description: string;
+  /**
+   * JSON Schema for the tool's arguments. When present, the tool is advertised
+   * to the model via the provider's native function-calling API. When absent,
+   * providers fall back to a prompt-based JSON convention.
+   */
+  parameters?: ToolParameterSchema;
   run: (args: TArgs, context: ToolContext) => Promise<TResult> | TResult;
+};
+
+/** A tool advertised to an LLM provider for native function calling. */
+export type ToolSchema = {
+  name: string;
+  description: string;
+  parameters: ToolParameterSchema;
 };
 
 export type STTProvider = {
@@ -93,6 +120,8 @@ export type LLMInput = {
   transcript: TranscriptMessage[];
   instructions: string;
   toolCalls: ToolCall[];
+  /** Tools the model may call, advertised for native function calling. */
+  tools?: ToolSchema[];
 };
 
 export type PlannedToolCall = {
@@ -169,6 +198,8 @@ export type STTConnectOptions = {
 
 export type StreamingSTTProvider = {
   readonly name: string;
+  /** Optional capability check, mirroring the non-streaming providers. */
+  isSupported?: () => boolean;
   connect: (options?: STTConnectOptions) => Promise<void>;
   sendAudio: (chunk: AudioChunk) => void;
   flush: () => void;
@@ -184,6 +215,8 @@ export type LLMStreamInput = {
   transcript: TranscriptMessage[];
   instructions: string;
   toolCalls: ToolCall[];
+  /** Tools the model may call, advertised for native function calling. */
+  tools?: ToolSchema[];
 };
 
 export type LLMStreamEvent =
@@ -193,6 +226,8 @@ export type LLMStreamEvent =
 
 export type StreamingLLMProvider = {
   readonly name: string;
+  /** Optional capability check, mirroring the non-streaming providers. */
+  isSupported?: () => boolean;
   stream: (input: LLMStreamInput, options?: { signal?: AbortSignal }) => AsyncIterable<LLMStreamEvent>;
   abort: () => void;
 };
@@ -204,6 +239,8 @@ export type TTSConnectOptions = {
 
 export type StreamingTTSProvider = {
   readonly name: string;
+  /** Optional capability check, mirroring the non-streaming providers. */
+  isSupported?: () => boolean;
   connect: (options?: TTSConnectOptions) => Promise<void>;
   sendText: (text: string) => void;
   flush: () => void;
@@ -253,11 +290,19 @@ export type StreamingVoiceSupportAgentEventMap = {
   error: { error: Error };
 };
 
+/** @deprecated Use {@link STTProvider}. */
 export type SpeechToTextProvider = STTProvider;
+/** @deprecated Use {@link TTSProvider}. */
 export type TextToSpeechProvider = TTSProvider;
+/** @deprecated Use {@link LLMProvider}. */
 export type AgentModelProvider = LLMProvider;
+/** @deprecated Use {@link LLMInput}. */
 export type AgentModelInput = LLMInput;
+/** @deprecated Use {@link LLMOutput}. */
 export type AgentModelOutput = LLMOutput;
+/** @deprecated Use {@link SupportTemplate}. */
 export type DomainTemplate = SupportTemplate;
+/** @deprecated Use {@link SupportAgentConfig}. */
 export type VoiceAgentConfig = SupportAgentConfig;
+/** @deprecated Use {@link VoiceSupportAgentEventMap}. */
 export type VoiceAgentEventMap = VoiceSupportAgentEventMap;

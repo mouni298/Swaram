@@ -1,5 +1,5 @@
-export { SwaramError } from "./core/errors.js";
-export type { SwaramErrorCode } from "./core/errors.js";
+export { SwaramError, codeForStatus } from "./core/errors.js";
+export type { SwaramErrorCode, SwaramErrorOptions } from "./core/errors.js";
 export { AudioPlaybackQueue } from "./core/audio-playback-queue.js";
 export { InterruptionController } from "./core/interruption-controller.js";
 export { ToolRegistry } from "./core/tool-registry.js";
@@ -24,9 +24,10 @@ export type {
   RelayUnknown,
   ConversationRelayTwiMLOptions,
 } from "./telephony/conversation-relay.js";
-export { OpenAIStreamingLLMProvider } from "./providers/llm/openai-streaming-llm.js";
+export { HttpBridgeLLMProvider, OpenAIStreamingLLMProvider } from "./providers/llm/http-bridge-llm.js";
 export { OllamaStreamingLLMProvider } from "./providers/llm/ollama-streaming-llm.js";
 export { GroqStreamingLLMProvider } from "./providers/llm/groq-streaming-llm.js";
+export { AnthropicStreamingLLMProvider } from "./providers/llm/anthropic-streaming-llm.js";
 export { DeepgramStreamingSTTProvider } from "./providers/stt/deepgram-streaming-stt.js";
 export { WhisperCppSTTProvider } from "./providers/stt/whisper-cpp-stt.js";
 export { BrowserSTTProvider, BrowserSpeechRecognitionProvider } from "./providers/stt/browser-stt.js";
@@ -78,6 +79,8 @@ export type {
   ToolCall,
   ToolContext,
   ToolDefinition,
+  ToolParameterSchema,
+  ToolSchema,
   TranscriptMessage,
   TurnResult,
   Unsubscribe,

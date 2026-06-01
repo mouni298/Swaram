@@ -84,6 +84,24 @@ class MockLLM implements StreamingLLMProvider {
   }
 }
 
+// Returns a different scripted set of events on each call: round 1 emits a tool
+// call, round 2 the grounded answer — mirroring real native function calling.
+class ScriptedLLM implements StreamingLLMProvider {
+  readonly name = "scripted-llm";
+  abort = vi.fn();
+  private call = 0;
+
+  constructor(private readonly rounds: LLMStreamEvent[][]) {}
+
+  async *stream() {
+    const events = this.rounds[this.call] ?? [];
+    this.call += 1;
+    for (const event of events) {
+      yield event;
+    }
+  }
+}
+
 class MockTTS implements StreamingTTSProvider {
   readonly name = "mock-tts";
   readonly handlers = {
@@ -113,10 +131,10 @@ class MockTTS implements StreamingTTSProvider {
   }
 }
 
-function createStreamingAgent(events?: LLMStreamEvent[]) {
+function createStreamingAgent(events?: LLMStreamEvent[], llmOverride?: StreamingLLMProvider) {
   const vad = new MockVAD();
   const stt = new MockSTT();
-  const llm = new MockLLM(events);
+  const llm = llmOverride ?? new MockLLM(events);
   const tts = new MockTTS();
   const agent = new StreamingVoiceSupportAgent({
     template: ecommerceSupportTemplate,
@@ -191,17 +209,23 @@ describe("StreamingVoiceSupportAgent", () => {
     expect(tts.stop).toHaveBeenCalledOnce();
   });
 
-  it("executes tool calls from streaming LLM events", async () => {
-    const { agent, stt } = createStreamingAgent([
-      { type: "toolCall", name: "lookup_order", args: { orderId: "12345" } },
-      { type: "text", text: "I found the order. " },
+  it("executes tool calls then re-prompts with the result for a grounded reply", async () => {
+    const llm = new ScriptedLLM([
+      [{ type: "toolCall", name: "lookup_order", args: { orderId: "12345" } }],
+      [{ type: "text", text: "I found the order. " }],
     ]);
+    const { agent, stt, tts } = createStreamingAgent(undefined, llm);
 
     await agent.start();
     stt.emit("speechFinal", "Where is my order 12345?");
     await expect.poll(() => agent.getToolCalls().length).toBe(1);
+    await expect.poll(() => tts.sendText.mock.calls.length).toBe(1);
 
     expect(agent.getToolCalls()[0]?.name).toBe("lookup_order");
+    // The grounded answer is produced in the round after the tool result.
+    expect(tts.sendText).toHaveBeenCalledWith("I found the order. ");
+    // user -> tool result -> assistant (the system instructions sit at index 0).
+    expect(agent.getTranscript().map((m) => m.role)).toEqual(["system", "user", "tool", "assistant"]);
   });
 
   it("stops providers and allows restart after STT errors", async () => {

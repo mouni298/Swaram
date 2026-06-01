@@ -1,4 +1,7 @@
-import type { AudioChunk, StreamingSTTProvider, TranscriptDelta, Unsubscribe } from "../../types.js";
+import { ProviderEmitter } from "../../core/provider-emitter.js";
+import { readEnv } from "../../core/env.js";
+import { SwaramError } from "../../core/errors.js";
+import type { AudioChunk, StreamingSTTProvider, TranscriptDelta } from "../../types.js";
 
 type WebSocketLike = {
   binaryType?: BinaryType;
@@ -17,35 +20,49 @@ type DeepgramResult = {
   speech_final?: boolean;
 };
 
-export class DeepgramStreamingSTTProvider implements StreamingSTTProvider {
+type STTPayload = TranscriptDelta | { error: Error };
+type STTEvent = "partial" | "final" | "speechFinal" | "error";
+
+export class DeepgramStreamingSTTProvider
+  extends ProviderEmitter<STTEvent, STTPayload>
+  implements StreamingSTTProvider
+{
   readonly name = "deepgram-streaming-stt";
+  private readonly apiKey: string;
   private socket: WebSocketLike | null = null;
-  private handlers = {
-    partial: new Set<(payload: TranscriptDelta | { error: Error }) => void>(),
-    final: new Set<(payload: TranscriptDelta | { error: Error }) => void>(),
-    speechFinal: new Set<(payload: TranscriptDelta | { error: Error }) => void>(),
-    error: new Set<(payload: TranscriptDelta | { error: Error }) => void>(),
-  };
 
   constructor(
     private readonly options: {
-      apiKey: string;
+      apiKey?: string;
       model?: string;
       language?: string;
       endpointing?: number;
       smartFormat?: boolean;
       url?: string;
       createWebSocket?: (url: string, protocols?: string[]) => WebSocketLike;
-    },
-  ) {}
+    } = {},
+  ) {
+    super(["partial", "final", "speechFinal", "error"]);
+    this.apiKey = options.apiKey ?? readEnv("DEEPGRAM_API_KEY") ?? "";
+  }
+
+  isSupported() {
+    return Boolean(this.apiKey) && (Boolean(this.options.createWebSocket) || typeof WebSocket !== "undefined");
+  }
 
   connect(options: { language?: string; signal?: AbortSignal } = {}) {
+    if (!this.apiKey) {
+      return Promise.reject(
+        new SwaramError("AUTH", "DeepgramStreamingSTTProvider requires an apiKey (or set DEEPGRAM_API_KEY)."),
+      );
+    }
+
     const url = this.buildUrl(options.language);
 
     return new Promise<void>((resolve, reject) => {
       const socket = this.options.createWebSocket
-        ? this.options.createWebSocket(url, ["token", this.options.apiKey])
-        : new WebSocket(url, ["token", this.options.apiKey]);
+        ? this.options.createWebSocket(url, ["token", this.apiKey])
+        : new WebSocket(url, ["token", this.apiKey]);
 
       socket.binaryType = "arraybuffer";
       this.socket = socket;
@@ -53,7 +70,7 @@ export class DeepgramStreamingSTTProvider implements StreamingSTTProvider {
       socket.addEventListener("open", () => resolve());
       socket.addEventListener("message", (event) => this.handleMessage(event as MessageEvent));
       socket.addEventListener("error", () => {
-        const error = new Error("Deepgram streaming STT connection failed.");
+        const error = new SwaramError("PROVIDER_FAILURE", "Deepgram streaming STT connection failed.");
         this.emit("error", { error });
         reject(error);
       });
@@ -83,16 +100,6 @@ export class DeepgramStreamingSTTProvider implements StreamingSTTProvider {
   close() {
     this.socket?.close();
     this.socket = null;
-  }
-
-  on(
-    event: "partial" | "final" | "speechFinal" | "error",
-    handler: (payload: TranscriptDelta | { error: Error }) => void,
-  ): Unsubscribe {
-    this.handlers[event].add(handler);
-    return () => {
-      this.handlers[event].delete(handler);
-    };
   }
 
   private buildUrl(language?: string) {
@@ -130,12 +137,6 @@ export class DeepgramStreamingSTTProvider implements StreamingSTTProvider {
 
     if (data.speech_final) {
       this.emit("speechFinal", { text, isFinal: true });
-    }
-  }
-
-  private emit(event: "partial" | "final" | "speechFinal" | "error", payload: TranscriptDelta | { error: Error }) {
-    for (const handler of this.handlers[event]) {
-      handler(payload);
     }
   }
 }

@@ -1,6 +1,14 @@
-import type { AudioChunk, StreamingTTSProvider, TTSConnectOptions, Unsubscribe } from "../../types.js";
+import { connectFetch, throwForStatus } from "../../core/http.js";
+import { ProviderEmitter } from "../../core/provider-emitter.js";
+import { toSwaramError } from "../../core/errors.js";
+import type { AudioChunk, StreamingTTSProvider, TTSConnectOptions } from "../../types.js";
 
-export class PiperTTSProvider implements StreamingTTSProvider {
+type TTSPayload = AudioChunk | { error: Error };
+type TTSEvent = "audio" | "start" | "end" | "error";
+
+const EMPTY_CHUNK: AudioChunk = { data: new Uint8Array() };
+
+export class PiperTTSProvider extends ProviderEmitter<TTSEvent, TTSPayload> implements StreamingTTSProvider {
   readonly name = "piper-tts";
   // Bumped only on stop()/close() (interruption). Every sendText within one turn
   // shares the same generation, so sequential chunks are NOT treated as stale.
@@ -10,12 +18,6 @@ export class PiperTTSProvider implements StreamingTTSProvider {
   private chain: Promise<void> = Promise.resolve();
   private connected = false;
   private signal: AbortSignal | undefined;
-  private handlers = {
-    audio: new Set<(payload: AudioChunk | { error: Error }) => void>(),
-    start: new Set<(payload: AudioChunk | { error: Error }) => void>(),
-    end: new Set<(payload: AudioChunk | { error: Error }) => void>(),
-    error: new Set<(payload: AudioChunk | { error: Error }) => void>(),
-  };
 
   constructor(
     private readonly options: {
@@ -23,8 +25,15 @@ export class PiperTTSProvider implements StreamingTTSProvider {
       endpoint?: string;
       voice?: string;
       fetchImpl?: typeof fetch;
+      timeoutMs?: number;
     } = {},
-  ) {}
+  ) {
+    super(["audio", "start", "end", "error"]);
+  }
+
+  isSupported() {
+    return typeof fetch !== "undefined";
+  }
 
   connect(options: TTSConnectOptions = {}) {
     this.connected = true;
@@ -53,17 +62,7 @@ export class PiperTTSProvider implements StreamingTTSProvider {
   close() {
     this.connected = false;
     this.stop();
-    this.emit("end", new Uint8Array());
-  }
-
-  on(
-    event: "audio" | "start" | "end" | "error",
-    handler: (payload: AudioChunk | { error: Error }) => void,
-  ): Unsubscribe {
-    this.handlers[event].add(handler);
-    return () => {
-      this.handlers[event].delete(handler);
-    };
+    this.emit("end", EMPTY_CHUNK);
   }
 
   private async synthesize(text: string, generation: number) {
@@ -72,21 +71,25 @@ export class PiperTTSProvider implements StreamingTTSProvider {
     }
 
     try {
-      this.emit("start", new Uint8Array());
-      const response = await (this.options.fetchImpl ?? fetch)(this.url(), {
-        method: "POST",
-        headers: {
-          "Content-Type": "text/plain",
-          ...(this.options.voice ? { "X-Piper-Voice": this.options.voice } : {}),
+      this.emit("start", EMPTY_CHUNK);
+      const response = await connectFetch(
+        this.url(),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/plain",
+            ...(this.options.voice ? { "X-Piper-Voice": this.options.voice } : {}),
+          },
+          body: text,
         },
-        body: text,
-        ...(this.signal ? { signal: this.signal } : {}),
-      });
+        {
+          fetchImpl: this.options.fetchImpl,
+          ...(this.signal ? { signal: this.signal } : {}),
+          ...(this.options.timeoutMs !== undefined ? { timeoutMs: this.options.timeoutMs } : {}),
+        },
+      );
 
-      if (!response.ok) {
-        const detail = await response.text().catch(() => "");
-        throw new Error(`Piper TTS failed with status ${response.status}.${detail ? ` ${detail}` : ""}`);
-      }
+      await throwForStatus(response, "Piper TTS");
 
       const audio = await response.arrayBuffer();
       if (generation !== this.generation || !this.connected) {
@@ -97,12 +100,10 @@ export class PiperTTSProvider implements StreamingTTSProvider {
         data: audio,
         mimeType: response.headers.get("Content-Type") ?? "audio/wav",
       });
-      this.emit("end", new Uint8Array());
+      this.emit("end", EMPTY_CHUNK);
     } catch (error) {
       if (generation === this.generation) {
-        this.emit("error", {
-          error: error instanceof Error ? error : new Error(String(error)),
-        });
+        this.emit("error", { error: toSwaramError(error, "PROVIDER_FAILURE") });
       }
     }
   }
@@ -110,12 +111,5 @@ export class PiperTTSProvider implements StreamingTTSProvider {
   private url() {
     const baseUrl = this.options.baseUrl ?? "http://localhost:5000";
     return new URL(this.options.endpoint ?? "/api/tts", baseUrl).toString();
-  }
-
-  private emit(event: "audio" | "start" | "end" | "error", payload: AudioChunk | { error: Error } | Uint8Array) {
-    const normalized = payload instanceof Uint8Array ? { data: payload } : payload;
-    for (const handler of this.handlers[event]) {
-      handler(normalized);
-    }
   }
 }

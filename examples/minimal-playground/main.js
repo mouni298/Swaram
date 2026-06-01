@@ -344,7 +344,9 @@ function createAgent() {
   // assistant messages both arrive here; assistant text also streams live via
   // llmToken, so we reconcile the two below.
   nextAgent.on("transcript", ({ message }) => {
-    if (message.role === "system") {
+    // System instructions and tool-result turns are internal context; tool calls
+    // surface to the user via the dedicated tool chip below.
+    if (message.role === "system" || message.role === "tool") {
       return;
     }
     if (message.role === "assistant") {

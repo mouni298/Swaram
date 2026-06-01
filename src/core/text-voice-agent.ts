@@ -1,8 +1,9 @@
 import { toSwaramError } from "./errors.js";
 import { TypedEventEmitter } from "./event-emitter.js";
 import { ToolRegistry } from "./tool-registry.js";
+import { MAX_TOOL_ROUNDS, createId, createMessage, createToolCall, latestUserText } from "./session.js";
 import type {
-  LLMStreamEvent,
+  PlannedToolCall,
   StreamingLLMProvider,
   SupportTemplate,
   ToolCall,
@@ -10,29 +11,6 @@ import type {
   TranscriptMessage,
   Unsubscribe,
 } from "../types.js";
-
-function createId() {
-  return globalThis.crypto?.randomUUID?.() ?? `swaram_${Date.now()}_${Math.random()}`;
-}
-
-function createMessage(role: TranscriptMessage["role"], content: string): TranscriptMessage {
-  return {
-    id: createId(),
-    role,
-    content,
-    createdAt: new Date(),
-  };
-}
-
-function createToolCall(name: string, args: Record<string, unknown>, result?: unknown): ToolCall {
-  return {
-    id: createId(),
-    name,
-    args,
-    result,
-    createdAt: new Date(),
-  };
-}
 
 export type TextVoiceAgentConfig = {
   instructions?: string;
@@ -55,14 +33,14 @@ export type TextVoiceAgentEventMap = {
 
 /**
  * Headless, transport-agnostic turn engine: takes a user prompt as text, streams
- * an LLM reply, runs tools, and maintains the transcript — with no STT, TTS, VAD,
- * or audio playback. This is the orchestration core a text-based transport (e.g.
- * Twilio ConversationRelay, which does STT/TTS itself) plugs into, and the part of
- * the streaming agent that is portable to Node.
+ * an LLM reply, runs tools (feeding results back for a grounded follow-up), and
+ * maintains the transcript — with no STT, TTS, VAD, or audio playback. This is the
+ * orchestration core a text-based transport (e.g. Twilio ConversationRelay, which
+ * does STT/TTS itself) plugs into, and the part of the streaming agent that is
+ * portable to Node.
  *
- * Mirrors StreamingVoiceSupportAgent's `respondToFinalTranscript` LLM/tool path so
- * the spoken and phone agents behave identically; it just emits text tokens
- * instead of pushing audio.
+ * Mirrors StreamingVoiceSupportAgent's tool loop so the spoken and phone agents
+ * behave identically; it just emits text tokens instead of pushing audio.
  */
 export class TextVoiceAgent {
   readonly sessionId = createId();
@@ -108,9 +86,10 @@ export class TextVoiceAgent {
   }
 
   /**
-   * Run one user turn: stream the assistant reply, executing tools as they appear.
-   * Emits `token` per human-facing text chunk and `turnEnd` with the full reply.
-   * Resolves with the assistant text (empty string for a tool-only / aborted turn).
+   * Run one user turn: stream the assistant reply, executing tools as they appear
+   * and re-prompting with their results. Emits `token` per human-facing text chunk
+   * and `turnEnd` with the full reply. Resolves with the assistant text (empty
+   * string for a tool-only / aborted turn).
    */
   async handlePrompt(text: string): Promise<string> {
     if (!text.trim()) {
@@ -127,40 +106,40 @@ export class TextVoiceAgent {
     this.responding = true;
     this.addMessage("user", text);
 
-    let assistantText = "";
+    let fullText = "";
 
     try {
-      for await (const event of this.config.llm.stream(
-        {
-          input: text,
-          transcript: this.getTranscript(),
-          instructions: this.instructions,
-          toolCalls: this.getToolCalls(),
-        },
-        { signal },
-      )) {
+      for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
         if (signal.aborted) {
           break;
         }
 
-        await this.handleLLMEvent(event);
+        const { text: roundText, toolCalls } = await this.streamRound(signal);
+        fullText += roundText;
 
-        if (event.type === "text") {
-          assistantText += event.text;
-          this.events.emit("token", { text: event.text });
+        // On a barge-in we drop the half-formed turn without committing it.
+        if (signal.aborted) {
+          break;
         }
+
+        if (roundText) {
+          this.addMessage("assistant", roundText);
+        }
+
+        if (toolCalls.length === 0) {
+          break;
+        }
+
+        await this.runToolCalls(toolCalls);
       }
 
-      if (assistantText) {
-        this.addMessage("assistant", assistantText);
-      }
-      this.events.emit("turnEnd", { text: assistantText });
-      return assistantText;
+      this.events.emit("turnEnd", { text: fullText });
+      return fullText;
     } catch (error) {
       // A barge-in aborts the in-flight stream on purpose; surface as an abort and
       // don't treat it as a failure.
       if (error instanceof Error && error.name === "AbortError") {
-        return assistantText;
+        return fullText;
       }
       const normalized = toSwaramError(error, "PROVIDER_FAILURE");
       this.events.emit("error", { error: normalized });
@@ -170,23 +149,63 @@ export class TextVoiceAgent {
     }
   }
 
-  private async handleLLMEvent(event: LLMStreamEvent) {
-    if (event.type !== "toolCall") {
-      return;
+  private async streamRound(signal: AbortSignal): Promise<{ text: string; toolCalls: PlannedToolCall[] }> {
+    let roundText = "";
+    const toolCalls: PlannedToolCall[] = [];
+    const toolSchemas = this.tools.schemas();
+
+    try {
+      for await (const event of this.config.llm.stream(
+        {
+          // See StreamingVoiceSupportAgent.streamRound: `transcript` is the source
+          // of truth, but raw-passthrough providers rely on `input`.
+          input: latestUserText(this.transcript),
+          transcript: this.getTranscript(),
+          instructions: this.instructions,
+          toolCalls: this.getToolCalls(),
+          ...(toolSchemas ? { tools: toolSchemas } : {}),
+        },
+        { signal },
+      )) {
+        if (signal.aborted) {
+          break;
+        }
+
+        if (event.type === "toolCall") {
+          toolCalls.push({ name: event.name, args: event.args });
+        } else if (event.type === "text") {
+          roundText += event.text;
+          this.events.emit("token", { text: event.text });
+        }
+      }
+    } catch (error) {
+      // A barge-in aborts the in-flight stream on purpose — keep the partial text
+      // gathered so far and let the caller settle the turn. Re-throw real errors.
+      if (!(signal.aborted || (error instanceof Error && error.name === "AbortError"))) {
+        throw error;
+      }
     }
 
-    const result = await this.tools.run(event.name, event.args, {
-      sessionId: this.sessionId,
-      transcript: this.getTranscript(),
-      instructions: this.instructions,
-    });
-    const completedCall = createToolCall(event.name, event.args, result);
-    this.toolCalls.push(completedCall);
-    this.events.emit("toolCall", { toolCall: completedCall });
+    return { text: roundText, toolCalls };
   }
 
-  private addMessage(role: TranscriptMessage["role"], content: string) {
-    const message = createMessage(role, content);
+  private async runToolCalls(plannedCalls: PlannedToolCall[]) {
+    for (const planned of plannedCalls) {
+      const result = await this.tools.run(planned.name, planned.args, {
+        sessionId: this.sessionId,
+        transcript: this.getTranscript(),
+        instructions: this.instructions,
+      });
+      const completedCall = createToolCall(planned.name, planned.args, result);
+      this.toolCalls.push(completedCall);
+      this.events.emit("toolCall", { toolCall: completedCall });
+      // Feed the result back so the next round's reply is grounded in it.
+      this.addMessage("tool", JSON.stringify(result ?? null), planned.name);
+    }
+  }
+
+  private addMessage(role: TranscriptMessage["role"], content: string, name?: string) {
+    const message = createMessage(role, content, name);
     this.transcript.push(message);
     this.events.emit("transcript", {
       message,
