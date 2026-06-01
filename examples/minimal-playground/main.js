@@ -213,6 +213,263 @@ sttModelSelect.replaceChildren(
 
 populateVoicesForLanguage();
 
+// ---------------------------------------------------------------------------
+// Custom tools: a user-defined toolbox the agent can call. Persisted locally.
+// Each tool advertises a JSON-Schema to the model (native function calling); on
+// call it either returns a fixed mock result or POSTs the args to a webhook.
+// ---------------------------------------------------------------------------
+const TOOLS_STORAGE = "swaram.customTools";
+const DEMO_TOOLS_STORAGE = "swaram.useDemoTools";
+const RESERVED_NAMES = new Set(ecommerceSupportTemplate.tools.map((tool) => tool.name));
+
+const DEFAULT_PARAMS = `{
+  "type": "object",
+  "properties": {
+    "city": { "type": "string", "description": "City name" }
+  },
+  "required": ["city"]
+}`;
+const DEFAULT_RESULT = `{ "temperature": "72F", "conditions": "sunny" }`;
+
+function loadCustomTools() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TOOLS_STORAGE) ?? "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+let customTools = loadCustomTools();
+let useDemoTools = localStorage.getItem(DEMO_TOOLS_STORAGE) !== "false";
+
+function saveCustomTools() {
+  localStorage.setItem(TOOLS_STORAGE, JSON.stringify(customTools));
+}
+
+// Turn a stored tool spec into a ToolDefinition.run implementation.
+function makeRunner(tool) {
+  if (tool.mode === "webhook") {
+    return async (args) => {
+      try {
+        const res = await fetch(tool.response, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(args ?? {}),
+        });
+        if (!res.ok) {
+          return { error: `Webhook returned ${res.status}` };
+        }
+        const text = await res.text();
+        try {
+          return JSON.parse(text);
+        } catch {
+          return text;
+        }
+      } catch (error) {
+        return { error: String(error?.message ?? error) };
+      }
+    };
+  }
+
+  // Static mock: parse once, return the same value on every call.
+  let value;
+  try {
+    value = JSON.parse(tool.response);
+  } catch {
+    value = tool.response;
+  }
+  return () => value;
+}
+
+function buildToolDefinitions() {
+  const custom = customTools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+    run: makeRunner(tool),
+  }));
+  return useDemoTools ? [...ecommerceSupportTemplate.tools, ...custom] : custom;
+}
+
+// ---- Tool list UI ----
+const toolListEl = document.querySelector("#tool-list");
+const demoToolsToggle = document.querySelector("#demo-tools-toggle");
+demoToolsToggle.checked = useDemoTools;
+
+function renderToolList() {
+  toolListEl.replaceChildren();
+  if (customTools.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "tool-empty";
+    empty.textContent = "No custom tools yet. Add one to extend the agent.";
+    toolListEl.append(empty);
+    return;
+  }
+
+  for (const tool of customTools) {
+    const item = document.createElement("div");
+    item.className = "tool-item";
+
+    const meta = document.createElement("div");
+    meta.className = "tool-meta";
+    const name = document.createElement("div");
+    name.className = "tool-name";
+    const badge = document.createElement("span");
+    badge.className = "tool-badge";
+    badge.textContent = tool.mode === "webhook" ? "webhook" : "mock";
+    name.append(document.createTextNode(tool.name), badge);
+    const desc = document.createElement("div");
+    desc.className = "tool-desc";
+    desc.textContent = tool.description;
+    meta.append(name, desc);
+
+    const ops = document.createElement("div");
+    ops.className = "tool-ops";
+    const edit = document.createElement("button");
+    edit.className = "icon-btn";
+    edit.title = "Edit";
+    edit.textContent = "✎";
+    edit.addEventListener("click", () => openToolEditor(tool));
+    const del = document.createElement("button");
+    del.className = "icon-btn danger";
+    del.title = "Delete";
+    del.textContent = "🗑";
+    del.addEventListener("click", () => deleteTool(tool.id));
+    ops.append(edit, del);
+
+    item.append(meta, ops);
+    toolListEl.append(item);
+  }
+}
+
+function deleteTool(id) {
+  customTools = customTools.filter((tool) => tool.id !== id);
+  saveCustomTools();
+  renderToolList();
+  recreateAgent({ ready: "Tool removed." });
+}
+
+// ---- Tool editor dialog ----
+const toolDialog = document.querySelector("#tool-editor");
+const toolForm = document.querySelector("#tool-form");
+const fTitle = document.querySelector("#tool-dialog-title");
+const fName = document.querySelector("#tool-name");
+const fDesc = document.querySelector("#tool-desc");
+const fParams = document.querySelector("#tool-params");
+const fMode = document.querySelector("#tool-mode");
+const fResult = document.querySelector("#tool-result");
+const fUrl = document.querySelector("#tool-url");
+const staticRow = document.querySelector("#tool-static-row");
+const webhookRow = document.querySelector("#tool-webhook-row");
+const fError = document.querySelector("#tool-error");
+let editingId = null;
+
+function syncModeRows() {
+  const webhook = fMode.value === "webhook";
+  webhookRow.hidden = !webhook;
+  staticRow.hidden = webhook;
+}
+
+function openToolEditor(tool) {
+  editingId = tool?.id ?? null;
+  fTitle.textContent = tool ? "Edit tool" : "Add tool";
+  fName.value = tool?.name ?? "";
+  fDesc.value = tool?.description ?? "";
+  fParams.value = JSON.stringify(tool?.parameters ?? JSON.parse(DEFAULT_PARAMS), null, 2);
+  fMode.value = tool?.mode ?? "static";
+  fResult.value = tool && tool.mode === "static" ? tool.response : DEFAULT_RESULT;
+  fUrl.value = tool && tool.mode === "webhook" ? tool.response : "";
+  fError.hidden = true;
+  syncModeRows();
+  toolDialog.showModal();
+}
+
+function fail(message) {
+  fError.textContent = message;
+  fError.hidden = false;
+  return null;
+}
+
+// Validate the form and return a tool spec, or null (with an error shown).
+function readToolForm() {
+  const name = fName.value.trim();
+  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(name)) {
+    return fail("Name must start with a letter and use only letters, numbers, or underscores.");
+  }
+  if (RESERVED_NAMES.has(name)) {
+    return fail(`"${name}" is reserved by a demo tool. Pick another name.`);
+  }
+  if (customTools.some((tool) => tool.name === name && tool.id !== editingId)) {
+    return fail(`A tool named "${name}" already exists.`);
+  }
+
+  const description = fDesc.value.trim();
+  if (!description) {
+    return fail("Description is required — it's how the model knows when to call the tool.");
+  }
+
+  let parameters;
+  try {
+    parameters = JSON.parse(fParams.value);
+  } catch (error) {
+    return fail(`Parameters must be valid JSON. ${error.message}`);
+  }
+  if (!parameters || parameters.type !== "object") {
+    return fail('Parameters must be a JSON Schema object, e.g. { "type": "object", "properties": {} }.');
+  }
+
+  const mode = fMode.value;
+  let response;
+  if (mode === "webhook") {
+    response = fUrl.value.trim();
+    try {
+      void new URL(response);
+    } catch {
+      return fail("Enter a valid webhook URL (https://…).");
+    }
+  } else {
+    response = fResult.value.trim();
+    try {
+      JSON.parse(response);
+    } catch (error) {
+      return fail(`Result must be valid JSON. ${error.message}`);
+    }
+  }
+
+  return { id: editingId ?? `tool_${Date.now()}`, name, description, parameters, mode, response };
+}
+
+toolForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const spec = readToolForm();
+  if (!spec) {
+    return;
+  }
+  const index = customTools.findIndex((tool) => tool.id === spec.id);
+  if (index >= 0) {
+    customTools[index] = spec;
+  } else {
+    customTools.push(spec);
+  }
+  saveCustomTools();
+  renderToolList();
+  toolDialog.close();
+  recreateAgent({ ready: `Tool "${spec.name}" saved.` });
+});
+
+document.querySelector("#tool-add").addEventListener("click", () => openToolEditor(null));
+document.querySelector("#tool-cancel").addEventListener("click", () => toolDialog.close());
+fMode.addEventListener("change", syncModeRows);
+
+demoToolsToggle.addEventListener("change", () => {
+  useDemoTools = demoToolsToggle.checked;
+  localStorage.setItem(DEMO_TOOLS_STORAGE, String(useDemoTools));
+  recreateAgent({ ready: useDemoTools ? "Demo tools enabled." : "Demo tools disabled." });
+});
+
+renderToolList();
+
 let agent = createAgent();
 let lastUsedKey = (groqKeyInput.value || localStorage.getItem(GROQ_KEY_STORAGE) || "").trim();
 let micLevelMeter = null;
@@ -324,7 +581,7 @@ function createAgent() {
       baseUrl: "http://localhost:5000",
       voice: selectedVoice.id,
     }),
-    tools: ecommerceSupportTemplate.tools,
+    tools: buildToolDefinitions(),
   });
 
   nextAgent.on("status", ({ status }) => {

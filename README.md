@@ -186,6 +186,10 @@ This is a small Deepgram-style playground UI with:
 - transcription selector
 - default LLM selector
 - editable instructions
+- a **Tools** tab to add your own tools the agent can call — define a name,
+  description, and JSON-Schema parameters, then return a fixed mock result or
+  POST the arguments to a webhook. Tools persist in the browser; the built-in
+  demo tools can be toggled on/off.
 - animated voice area
 - talk button
 - transcript

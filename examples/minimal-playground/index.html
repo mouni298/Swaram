@@ -691,6 +691,176 @@
         font-style: italic;
       }
 
+      /* ---------- Tools ---------- */
+      #tool-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .tool-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line-strong);
+        background: var(--field);
+        border-radius: 10px;
+      }
+
+      .tool-item .tool-meta {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .tool-item .tool-name {
+        font-weight: 700;
+        font-size: 13.5px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--cyan);
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .tool-item .tool-badge {
+        font-family: Inter, sans-serif;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--faint);
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        padding: 1px 7px;
+      }
+
+      .tool-item .tool-desc {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 3px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tool-item .tool-ops {
+        display: flex;
+        gap: 4px;
+        flex-shrink: 0;
+      }
+
+      .icon-btn {
+        appearance: none;
+        border: 1px solid var(--line-strong);
+        background: transparent;
+        color: var(--muted);
+        border-radius: 8px;
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .icon-btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--text);
+      }
+      .icon-btn.danger:hover {
+        color: var(--red);
+        border-color: rgba(255, 107, 107, 0.5);
+      }
+
+      .tool-empty {
+        color: var(--faint);
+        font-size: 12.5px;
+        font-style: italic;
+        padding: 4px 2px 2px;
+      }
+
+      .tool-actions-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin: 0;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--muted);
+        cursor: pointer;
+      }
+      .toggle input {
+        width: auto;
+        margin: 0;
+        accent-color: var(--green);
+        cursor: pointer;
+      }
+
+      /* ---------- Tool editor dialog ---------- */
+      .tool-dialog {
+        width: min(560px, 92vw);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius);
+        background: var(--panel-solid);
+        color: var(--text);
+        padding: 0;
+        box-shadow: var(--shadow);
+      }
+      .tool-dialog::backdrop {
+        background: rgba(3, 4, 6, 0.62);
+        backdrop-filter: blur(3px);
+      }
+      .tool-dialog form {
+        padding: 22px 22px 18px;
+        max-height: 86vh;
+        overflow-y: auto;
+      }
+      .tool-dialog h2 {
+        margin: 0 0 16px;
+        font-size: 17px;
+        font-weight: 750;
+      }
+      .tool-dialog label {
+        margin-top: 14px;
+      }
+      .tool-dialog .code {
+        min-height: 96px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+      .tool-error {
+        color: var(--red);
+        font-size: 12.5px;
+        margin: 12px 0 0;
+        white-space: pre-wrap;
+      }
+      .tool-dialog-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 18px;
+      }
+      .btn-primary {
+        color: #04130c;
+        background: linear-gradient(135deg, var(--green), var(--cyan));
+        border: 0;
+        font-weight: 700;
+      }
+      .btn-primary:hover {
+        filter: brightness(1.06);
+        background: linear-gradient(135deg, var(--green), var(--cyan));
+      }
+
       @media (max-width: 1180px) {
         .workspace {
           grid-template-columns: 1fr;
@@ -722,6 +892,7 @@
 
         <div class="tabs" role="tablist">
           <button class="tab active" data-tab="agent" role="tab">Agent</button>
+          <button class="tab" data-tab="tools" role="tab">Tools</button>
           <button class="tab" data-tab="speech" role="tab">Speech</button>
           <button class="tab" data-tab="model" role="tab">Model</button>
         </div>
@@ -737,6 +908,25 @@
             <label for="instructions">System instructions</label>
             <textarea id="instructions"></textarea>
             <p class="hint">The agent's persona and rules. Edits apply on the next turn.</p>
+          </div>
+        </div>
+
+        <!-- Tools tab -->
+        <div class="tab-panel" data-panel="tools">
+          <div class="card">
+            <label>Tools the agent can call</label>
+            <p class="hint">
+              The model decides when to call a tool from its name, description, and
+              parameters. Add your own below — return a fixed result or call a webhook.
+            </p>
+            <div id="tool-list"></div>
+            <div class="tool-actions-row">
+              <button class="btn-ghost" id="tool-add">+ Add tool</button>
+              <label class="toggle" title="Include the built-in QuickKart demo tools">
+                <input type="checkbox" id="demo-tools-toggle" checked />
+                <span>Demo tools</span>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -828,6 +1018,49 @@
         </div>
       </section>
     </main>
+
+    <dialog id="tool-editor" class="tool-dialog">
+      <form method="dialog" id="tool-form">
+        <h2 id="tool-dialog-title">Add tool</h2>
+
+        <label for="tool-name">Name</label>
+        <input id="tool-name" placeholder="get_weather" autocomplete="off" />
+        <p class="hint">Lowercase, no spaces. The model uses this to call the tool.</p>
+
+        <label for="tool-desc">Description</label>
+        <input id="tool-desc" placeholder="Get the current weather for a city." autocomplete="off" />
+        <p class="hint">Tell the model exactly when to use this tool.</p>
+
+        <label for="tool-params">Parameters (JSON Schema)</label>
+        <textarea id="tool-params" class="code" spellcheck="false"></textarea>
+        <p class="hint">A JSON Schema object describing the arguments.</p>
+
+        <label for="tool-mode">When called</label>
+        <select id="tool-mode">
+          <option value="static">Return a fixed result (mock)</option>
+          <option value="webhook">Call a webhook (POST the arguments)</option>
+        </select>
+
+        <div id="tool-static-row">
+          <label for="tool-result">Result (JSON)</label>
+          <textarea id="tool-result" class="code" spellcheck="false"></textarea>
+          <p class="hint">Returned verbatim to the model whenever the tool is called.</p>
+        </div>
+
+        <div id="tool-webhook-row" hidden>
+          <label for="tool-url">Webhook URL</label>
+          <input id="tool-url" type="url" placeholder="https://api.example.com/tool" autocomplete="off" />
+          <p class="hint">The arguments are POSTed as JSON; the JSON response is returned to the model.</p>
+        </div>
+
+        <p class="tool-error" id="tool-error" hidden></p>
+
+        <div class="tool-dialog-actions">
+          <button type="button" class="btn-ghost" id="tool-cancel">Cancel</button>
+          <button type="submit" class="btn-ghost btn-primary" id="tool-save">Save tool</button>
+        </div>
+      </form>
+    </dialog>
     <script src="/node_modules/onnxruntime-web/dist/ort.js"></script>
     <script>
       window.ort.env.wasm.wasmPaths = "/node_modules/onnxruntime-web/dist/";

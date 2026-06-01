@@ -37,6 +37,8 @@ export default tseslint.config(
         navigator: "readonly",
         localStorage: "readonly",
         fetch: "readonly",
+        URL: "readonly",
+        Date: "readonly",
         AudioContext: "readonly",
         EventSource: "readonly",
         requestAnimationFrame: "readonly",
