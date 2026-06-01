@@ -57,9 +57,10 @@ describe("parseRelayMessage", () => {
 });
 
 describe("outbound message builders", () => {
-  it("builds streaming and final text messages", () => {
-    expect(textMessage("Hello", false)).toEqual({ type: "text", tokens: [{ token: "Hello", last: false }] });
-    expect(textMessage("", true)).toEqual({ type: "text", tokens: [{ token: "", last: true }] });
+  it("builds streaming and final text messages (flat token field)", () => {
+    expect(textMessage("Hello", false)).toEqual({ type: "text", token: "Hello", last: false });
+    expect(textMessage("", true)).toEqual({ type: "text", token: "", last: true });
+    expect(textMessage("Hola", true, "es-ES")).toEqual({ type: "text", token: "Hola", last: true, lang: "es-ES" });
   });
 
   it("builds an end message with stringified handoff data", () => {

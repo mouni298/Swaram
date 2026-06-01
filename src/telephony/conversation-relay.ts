@@ -119,15 +119,17 @@ export function parseRelayMessage(raw: string | Buffer): RelayInbound {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a `text` message that Twilio will synthesize and speak. Pass `last: true`
- * on the final chunk of a turn so Twilio knows the agent is done talking. Stream
- * tokens by sending one of these per LLM chunk with `last: false`, then a final
- * `last: true` (which may be an empty token).
+ * Build a `text` message that Twilio will synthesize and speak. The wire format
+ * is a flat `{ type, token, last }` (a string `token`, NOT an array). Stream
+ * tokens by sending one per LLM chunk with `last: false`, then a final
+ * `last: true` (which may be an empty token) to close the turn.
  */
 export function textMessage(token: string, last = false, lang?: string) {
   return {
     type: "text" as const,
-    tokens: [{ token, last, ...(lang ? { lang } : {}) }],
+    token,
+    last,
+    ...(lang ? { lang } : {}),
   };
 }
 

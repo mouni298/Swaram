@@ -287,8 +287,16 @@ function attachRelay(wss) {
 
     ws.on("message", async (raw) => {
       const msg = parseRelayMessage(raw);
+      if (msg.type === "prompt") {
+        console.log(`[relay] prompt last=${msg.last} text=${JSON.stringify(msg.text)}`);
+      } else if (msg.type === "error") {
+        console.error(`[relay] twilio error ${msg.errorCode ?? ""}: ${msg.errorMessage ?? ""}`);
+      } else if (msg.type !== "unknown") {
+        console.log(`[relay] <- ${msg.type}`);
+      }
 
       if (msg.type === "setup") {
+        console.log(`[relay] setup callSid=${msg.callSid} cfgId=${msg.customParameters?.cfgId ?? "?"}`);
         const cfgId = msg.customParameters?.cfgId;
         let cfg = cfgId && configs.get(cfgId);
         // No-phone simulator hook: only when ALLOW_SIM=1, build a config from
@@ -341,10 +349,12 @@ function attachRelay(wss) {
 
       if (msg.type === "prompt" && msg.last && msg.text.trim()) {
         try {
-          await session.agent.handlePrompt(msg.text);
+          const reply = await session.agent.handlePrompt(msg.text);
+          console.log(`[relay] agent reply (${reply.length} chars): ${JSON.stringify(reply.slice(0, 120))}`);
           // Mark the end of this agent turn so Twilio knows to stop synthesizing.
           ws.send(JSON.stringify(textMessage("", true)));
         } catch (error) {
+          console.error(`[relay] agent error: ${error.message}`);
           ws.send(JSON.stringify(textMessage("Sorry, I'm having trouble right now. Goodbye.", true)));
           ws.send(JSON.stringify(endSession({ reason: "agent-error", message: error.message })));
         }
@@ -381,7 +391,8 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/call") {
       return await handleCall(req, res);
     }
-    if (req.method === "GET" && url.pathname === "/voice") {
+    // Twilio fetches the voice URL with POST by default (GET if configured).
+    if ((req.method === "POST" || req.method === "GET") && url.pathname === "/voice") {
       return await handleVoice(req, res, url);
     }
     if (req.method === "POST" && url.pathname === "/status") {
