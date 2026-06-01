@@ -4,6 +4,12 @@ Swaram AI is a TypeScript SDK for building voice support agents. It is inspired 
 
 The SDK is domain-agnostic. E-commerce support is included only as the first example template.
 
+## Documentation
+
+- [SDK Guide](./docs/README.md) — concepts, providers, tools, errors.
+- [Browser & real-time voice](./docs/browser.md) — in-app mic-to-speaker agents.
+- [Telephony (phone calls)](./docs/telephony.md) — Twilio ConversationRelay agents.
+
 ## Install
 
 ```bash
