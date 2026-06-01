@@ -17,3 +17,7 @@ __pycache__/
 # Local service logs (start-services.sh)
 .logs/
 
+# Secrets (phone-agent and friends)
+.env
+**/.env
+

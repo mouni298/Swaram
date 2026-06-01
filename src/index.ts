@@ -4,7 +4,26 @@ export { AudioPlaybackQueue } from "./core/audio-playback-queue.js";
 export { InterruptionController } from "./core/interruption-controller.js";
 export { ToolRegistry } from "./core/tool-registry.js";
 export { StreamingVoiceSupportAgent } from "./core/streaming-voice-support-agent.js";
+export { TextVoiceAgent } from "./core/text-voice-agent.js";
+export type { TextVoiceAgentConfig, TextVoiceAgentEventMap } from "./core/text-voice-agent.js";
 export { VoiceSupportAgent, VoiceAgent } from "./core/voice-support-agent.js";
+export {
+  parseRelayMessage,
+  textMessage,
+  endSession,
+  switchLanguage,
+  buildConversationRelayTwiML,
+} from "./telephony/conversation-relay.js";
+export type {
+  RelayInbound,
+  RelaySetup,
+  RelayPrompt,
+  RelayDtmf,
+  RelayInterrupt,
+  RelayError,
+  RelayUnknown,
+  ConversationRelayTwiMLOptions,
+} from "./telephony/conversation-relay.js";
 export { OpenAIStreamingLLMProvider } from "./providers/llm/openai-streaming-llm.js";
 export { OllamaStreamingLLMProvider } from "./providers/llm/ollama-streaming-llm.js";
 export { GroqStreamingLLMProvider } from "./providers/llm/groq-streaming-llm.js";

@@ -6,6 +6,7 @@
 #   5003  piper-telugu     (Piper TTS for Telugu; Kokoro has no Telugu voice)
 #   5000  tts-proxy        (CORS proxy: POST /api/tts -> kokoro or piper-telugu by voice)
 #   8011  static server    (serves repo root so /dist and /node_modules resolve)
+#   5005  phone-agent      (optional; outbound Twilio ConversationRelay, only with .env)
 #
 # Logs go to ./.logs/*.log. Re-running frees the ports first, so it is safe to repeat.
 set -euo pipefail
@@ -28,8 +29,8 @@ WHISPER_MODEL="${WHISPER_MODEL:-models/ggml-small.en.bin}"
 free_port() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | xargs -r kill 2>/dev/null || true; }
 wait_port() { for _ in $(seq 1 120); do lsof -nP -iTCP:"$1" -sTCP:LISTEN -t >/dev/null 2>&1 && return 0; sleep 0.25; done; return 1; }
 
-echo "Freeing ports 2022 2023 5000 5002 5003 8011 ..."
-for p in 2022 2023 5000 5002 5003 8011; do free_port "$p"; done
+echo "Freeing ports 2022 2023 5000 5002 5003 5005 8011 ..."
+for p in 2022 2023 5000 5002 5003 5005 8011; do free_port "$p"; done
 sleep 0.5
 
 echo "[2023] whisper-server"
@@ -66,6 +67,17 @@ wait_port 5000 && echo "      up" || { echo "      FAILED (see .logs/tts-proxy.l
 echo "[8011] static server"
 nohup python3 -m http.server 8011 --bind 127.0.0.1 >.logs/static.log 2>&1 &
 wait_port 8011 && echo "      up" || { echo "      FAILED (see .logs/static.log)"; exit 1; }
+
+# Optional: outbound phone agent (Twilio ConversationRelay). Only starts when its
+# .env is present, since it needs Twilio creds + a Groq key. Independent of the
+# local voice stack; pair with `ngrok http 5005` to take real calls.
+if [ -f "examples/phone-agent/.env" ]; then
+  echo "[5005] phone-agent (Twilio ConversationRelay)"
+  nohup node examples/phone-agent/server.mjs >.logs/phone-agent.log 2>&1 &
+  wait_port 5005 && echo "      up" || echo "      FAILED (see .logs/phone-agent.log)"
+else
+  echo "[5005] phone-agent: skipped (no examples/phone-agent/.env; see examples/phone-agent/README.md)"
+fi
 
 echo
 echo "All services up. Open:"
