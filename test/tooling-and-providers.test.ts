@@ -123,6 +123,34 @@ describe("ToolJsonStreamSplitter", () => {
     expect(tail.toolCalls).toEqual([]);
     expect(tail.text).toBe('{"note":"not a tool"}');
   });
+
+  it("converts a spoken <function=NAME>{...} tool call and never speaks the markup", () => {
+    const splitter = new ToolJsonStreamSplitter();
+    // Prose before the tag is safe to speak; the tag itself is held.
+    const spoken = splitter.push('Let me check the current weather for you. <function=get_weather>{"city":"Paris"}');
+    expect(spoken).toBe("Let me check the current weather for you. ");
+    const tail = splitter.flush();
+    expect(tail.text).toBe("");
+    expect(tail.toolCalls).toEqual([{ name: "get_weather", args: { city: "Paris" } }]);
+  });
+
+  it("handles a <function=…></function> tag split across stream chunks", () => {
+    const splitter = new ToolJsonStreamSplitter();
+    const chunks = ["On it. <fun", "ction=lookup_order>", '{"orderId":', '"12345"}</function>'];
+    const spoken = chunks.map((c) => splitter.push(c)).join("");
+    expect(spoken).toBe("On it. ");
+    const tail = splitter.flush();
+    expect(tail.text).toBe("");
+    expect(tail.toolCalls).toEqual([{ name: "lookup_order", args: { orderId: "12345" } }]);
+  });
+
+  it("handles the <tool_call>{name,arguments}</tool_call> format", () => {
+    const splitter = new ToolJsonStreamSplitter();
+    splitter.push('<tool_call>{"name":"get_weather","arguments":{"city":"Tokyo"}}</tool_call>');
+    const tail = splitter.flush();
+    expect(tail.toolCalls).toEqual([{ name: "get_weather", args: { city: "Tokyo" } }]);
+    expect(tail.text).toBe("");
+  });
 });
 
 describe("GroqStreamingLLMProvider", () => {
